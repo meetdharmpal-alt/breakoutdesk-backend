@@ -157,6 +157,9 @@ def home():
 @app.get("/api/scan-market")
 def scan_market():
     results = []
+    @app.get("/ping")
+def ping_server():
+    return {"status": "alive"}
     with ThreadPoolExecutor(max_workers=10) as executor:
         futures = {executor.submit(fetch_and_scan_stock, ticker): ticker for ticker in WATCHLIST}
         for future in as_completed(futures):
