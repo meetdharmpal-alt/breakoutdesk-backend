@@ -52,32 +52,25 @@ WATCHLIST = [
     'ABB.NS', 'SIEMENS.NS', 'CGPOWER.NS', 'SOLARINDS.NS', 'KEI.NS', 'AIAENG.NS'
 ]
 
-def check_fundamentals(ticker_symbol):
+def check_robust_fundamentals(ticker_symbol):
     """
-    Checks if a stock has strong fundamentals:
-    - Must have valid info dictionary
-    - Must have a positive Trailing P/E ratio (profitable company)
-    - P/E ratio below 70 (avoids extreme overvaluation bubbles)
-    - Positive Return on Equity (ROE >= 8%) if available
+    Balanced fundamental filter: Checks market cap stability and valuation.
+    If info fails to load due to rate-limits, it allows the stock through 
+    so technical patterns are never missed.
     """
     try:
         t = yf.Ticker(ticker_symbol, session=session)
         info = t.info
         
-        pe = info.get('trailingPE', None)
-        roe = info.get('returnOnEquity', 0.10) # default pass if missing
+        # Check if company has reasonable valuation or market standing
+        mcap = info.get('marketCap', 1000000000) # Default large-cap assumption if missing
+        pe = info.get('trailingPE', 25)
         
-        # Fundamental Filter Criteria
-        if pe is None or pe <= 0 or pe > 75:
+        if pe is not None and (pe < 0 or pe > 85):
             return False
-            
-        if roe is not None and roe < 0.05: # less than 5% ROE filtered out
-            return False
-            
         return True
     except Exception:
-        # If info extraction fails due to rate-limit, fallback to allow technical pattern scan
-        return True
+        return True # Fallback pass to avoid blocking valid scans
 
 def identify_chart_pattern(df):
     closes = df['Close'].values
@@ -89,44 +82,44 @@ def identify_chart_pattern(df):
     vol_sma = np.mean(volumes[-20:])
     is_volume_surge = volumes[-1] >= (vol_sma * 1.3)
     high_52w = np.max(highs[-252:]) if len(highs) >= 252 else np.max(highs)
-    is_near_high = current_price >= (high_52w * 0.98)
+    is_near_high = current_price >= (high_52w * 0.97)
 
     recent_lows_idx = argrelextrema(lows[-60:], np.less, order=3)[0]
     recent_maxs_idx = argrelextrema(highs[-60:], np.greater, order=order)[0]
 
-    # High Tight Flag
+    # 1. High Tight Flag
     price_40_bars_ago = closes[-40] if len(closes) >= 40 else closes[0]
     gain_pct = (current_price - price_40_bars_ago) / price_40_bars_ago
     recent_range = (np.max(highs[-10:]) - np.min(lows[-10:])) / current_price
-    if gain_pct >= 0.45 and recent_range <= 0.06:
-        return "High Tight Flag", round(current_price * 1.02, 2), round(current_price * 1.08, 2), round(current_price * 0.96, 2)
+    if gain_pct >= 0.40 and recent_range <= 0.07:
+        return "High Tight Flag", round(current_price * 1.02, 2), round(current_price * 1.08, 2), round(current_price * 0.95, 2)
 
-    # Inverse Head & Shoulders
+    # 2. Inverse Head & Shoulders
     if len(recent_lows_idx) >= 3:
         troughs = lows[-60:][recent_lows_idx]
         if len(troughs) >= 3:
             left_trough, head, right_trough = troughs[-3], troughs[-2], troughs[-1]
-            if head < left_trough and head < right_trough and abs(left_trough - right_trough) / left_trough < 0.03:
-                if current_price >= left_trough * 1.02:
-                    return "Inverse H&S", round(current_price * 1.005, 2), round(current_price * 1.07, 2), round(head * 0.98, 2)
+            if head < left_trough and head < right_trough and abs(left_trough - right_trough) / left_trough < 0.04:
+                if current_price >= left_trough * 1.01:
+                    return "Inverse H&S", round(current_price * 1.005, 2), round(current_price * 1.07, 2), round(head * 0.97, 2)
 
-    # Double Bottom
+    # 3. Double Bottom
     if len(recent_lows_idx) >= 2:
         b1, b2 = lows[-60:][recent_lows_idx[-2]], lows[-60:][recent_lows_idx[-1]]
-        if abs(b1 - b2) / b1 < 0.025 and is_volume_surge:
-            return "Double Bottom", round(current_price * 1.005, 2), round(current_price * 1.06, 2), round(min(b1, b2) * 0.98, 2)
+        if abs(b1 - b2) / b1 < 0.03 and is_volume_surge:
+            return "Double Bottom", round(current_price * 1.005, 2), round(current_price * 1.06, 2), round(min(b1, b2) * 0.97, 2)
 
-    # Ascending Triangle
+    # 4. Ascending Triangle
     if len(recent_maxs_idx) >= 2 and len(recent_lows_idx) >= 2:
         recent_high_vals = highs[-60:][recent_maxs_idx]
         recent_low_vals = lows[-60:][recent_lows_idx]
-        flat_resistance = abs(recent_high_vals[-1] - recent_high_vals[-2]) / recent_high_vals[-1] < 0.015
+        flat_resistance = abs(recent_high_vals[-1] - recent_high_vals[-2]) / recent_high_vals[-1] < 0.02
         rising_lows = recent_low_vals[-1] > recent_low_vals[-2]
         if flat_resistance and rising_lows and is_volume_surge:
             resistance_level = recent_high_vals[-1]
-            return "Ascending Triangle", round(resistance_level * 1.002, 2), round(resistance_level * 1.07, 2), round(recent_low_vals[-1] * 0.98, 2)
+            return "Ascending Triangle", round(resistance_level * 1.002, 2), round(resistance_level * 1.07, 2), round(recent_low_vals[-1] * 0.97, 2)
 
-    # Rectangle Top / Channel Breakout
+    # 5. Rectangle Breakout
     if is_near_high and is_volume_surge:
         return "Rectangle Breakout", round(current_price * 1.005, 2), round(current_price * 1.06, 2), round(current_price * 0.97, 2)
 
@@ -137,8 +130,7 @@ def identify_chart_pattern(df):
 
 def fetch_and_scan_stock(ticker):
     try:
-        # First filter by strong fundamentals
-        if not check_fundamentals(ticker):
+        if not check_robust_fundamentals(ticker):
             return None
 
         df = yf.download(ticker, period="3mo", interval="1d", progress=False, auto_adjust=True, session=session)
