@@ -1,4 +1,30 @@
-import warnings
+from fastapi import FastAPI
+import yfinance as yf
+import pandas as pd
+import numpy as np
+
+app = FastAPI()
+
+# --- 1. PASTE THE FUNDAMENTAL FILTER FUNCTION HERE ---
+def check_fundamentals(ticker_symbol):
+    """
+    Checks if a stock meets the 15%+ criteria for:
+    - Return on Equity (ROE) >= 15%
+    - Return on Capital Employed (ROCE) >= 15%
+    - 3-Year Sales CAGR >= 15%
+    - 3-Year Profit (Net Income) CAGR >= 15%
+    """
+    try:
+        stock = yf.Ticker(ticker_symbol)
+        
+        # 1. Fetch Financials & Balance Sheet for multi-year CAGR calculation
+        financials = stock.financials  # Income Statement (yearly)
+        balance_sheet = stock.balance_sheet
+        info = stock.info
+        
+        # Quick check on current ROE / ROCE from info dictionary
+        roe = info.get('returnOnEquity', 0) or 0
+        roce = info.get('returnOnCapitalEmployed', 0import warnings
 warnings.filterwarnings("ignore")
 
 import numpy as np
