@@ -1,30 +1,4 @@
-from fastapi import FastAPI
-import yfinance as yf
-import pandas as pd
-import numpy as np
-
-app = FastAPI()
-
-# --- 1. PASTE THE FUNDAMENTAL FILTER FUNCTION HERE ---
-def check_fundamentals(ticker_symbol):
-    """
-    Checks if a stock meets the 15%+ criteria for:
-    - Return on Equity (ROE) >= 15%
-    - Return on Capital Employed (ROCE) >= 15%
-    - 3-Year Sales CAGR >= 15%
-    - 3-Year Profit (Net Income) CAGR >= 15%
-    """
-    try:
-        stock = yf.Ticker(ticker_symbol)
-        
-        # 1. Fetch Financials & Balance Sheet for multi-year CAGR calculation
-        financials = stock.financials  # Income Statement (yearly)
-        balance_sheet = stock.balance_sheet
-        info = stock.info
-        
-        # Quick check on current ROE / ROCE from info dictionary
-        roe = info.get('returnOnEquity', 0) or 0
-        roce = info.get('returnOnCapitalEmployed', 0import warnings
+import warnings
 warnings.filterwarnings("ignore")
 
 import numpy as np
@@ -52,9 +26,7 @@ session = requests.Session()
 session.headers.update({
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
 })
-@app.get("/api/health")
-def health_check():
-    return {"status": "ok"}
+
 WATCHLIST = [
     'RELIANCE.NS', 'TCS.NS', 'INFY.NS', 'HDFCBANK.NS', 'ICICIBANK.NS', 'SBIN.NS', 
     'ITC.NS', 'BHARTIARTL.NS', 'WIPRO.NS', 'AXISBANK.NS', 'KOTAKBANK.NS', 'LT.NS', 
@@ -79,6 +51,51 @@ WATCHLIST = [
     'BOSCHLTD.NS', 'MRF.NS', 'BALKRISIND.NS', 'TIINDIA.NS', 'CUMMINSIND.NS',
     'ABB.NS', 'SIEMENS.NS', 'CGPOWER.NS', 'SOLARINDS.NS', 'KEI.NS', 'AIAENG.NS'
 ]
+
+# --- SAFE FUNDAMENTAL QUALITY CHECKER ---
+def check_fundamentals(ticker_symbol, stock_obj=None):
+    """
+    Checks 15%+ threshold for ROE, ROCE, Sales CAGR, and Profit CAGR.
+    Fails safely on missing data to avoid deployment crashes.
+    """
+    try:
+        stock = stock_obj if stock_obj else yf.Ticker(ticker_symbol, session=session)
+        info = stock.info or {}
+        
+        # 1. Check current ROE & ROCE
+        roe = info.get('returnOnEquity')
+        roce = info.get('returnOnCapitalEmployed')
+        
+        if roe is not None and roe < 0.15:
+            return False
+        if roce is not None and roce < 0.15:
+            return False
+
+        # 2. Check 3-Year Sales and Profit CAGR from financials
+        financials = stock.financials
+        if financials is not None and not financials.empty:
+            # Sales/Revenue check
+            rev_rows = [r for r in financials.index if 'Total Revenue' in str(r) or 'Revenue' in str(r)]
+            if rev_rows:
+                revs = financials.loc[rev_rows[0]].dropna().sort_index()
+                if len(revs) >= 4:
+                    start_rev, end_rev = revs.iloc[-4], revs.iloc[-1]
+                    if start_rev > 0 and ((end_rev / start_rev) ** (1 / 3) - 1) < 0.15:
+                        return False
+
+            # Profit/Net Income check
+            net_rows = [r for r in financials.index if 'Net Income' in str(r)]
+            if net_rows:
+                profits = financials.loc[net_rows[0]].dropna().sort_index()
+                if len(profits) >= 4:
+                    start_prof, end_prof = profits.iloc[-4], profits.iloc[-1]
+                    if start_prof > 0 and ((end_prof / start_prof) ** (1 / 3) - 1) < 0.15:
+                        return False
+
+        return True
+    except Exception:
+        # Default to True on missing metric errors so scanner stays functional
+        return True
 
 def identify_chart_pattern(df):
     closes = df['Close'].values
@@ -137,6 +154,11 @@ def identify_chart_pattern(df):
 def fetch_and_scan_stock(ticker):
     try:
         t = yf.Ticker(ticker, session=session)
+        
+        # Fundamental Filter Check
+        if not check_fundamentals(ticker, stock_obj=t):
+            return None
+
         df = t.history(period="3mo", auto_adjust=True)
         if df is None or df.empty or len(df) < 30:
             return None
@@ -175,44 +197,18 @@ def fetch_and_scan_stock(ticker):
             "volume": "2.1x ⚡" if is_vol else "1.0x",
             "ohlc": ohlc
         }
-    except Exception as e:
+    except Exception:
         return None
 
 @app.get("/")
 def home():
     return {"status": "online", "message": "BreakoutDesk Pattern Screener is running!"}
 
-@app.get("/api/scan-market")
-@app.get("/api/scan-market")
-def scan_market():
-    # Your full list of Indian stock tickers (approx 100+ tickers)
-    watchlist = ["TCS.NS", "INFY.NS", "SBIN.NS", "RELIANCE.NS", "BHARTIARTL.NS", "HDFCBANK.NS", "WIPRO.NS", "SUNPHARMA.NS", ...] 
-    
-    qualified_results = []
-    
-    for ticker in watchlist:
-        try:
-            # --- STEP 2: APPLY FUNDAMENTAL FILTER FIRST ---
-            # Skips any stock failing the 15%+ ROE, ROCE, Sales & Profit CAGR rule
-            if not check_fundamentals(ticker):
-                continue
-                
-            # --- YOUR EXISTING TECHNICAL PATTERN SCREENER LOGIC ---
-            # (Your code that fetches OHLC history, detects Inverse H&S, Double Bottom, etc.)
-            pattern_data = detect_technical_pattern(ticker)  # (Keep your existing pattern detection function name here)
-            
-            if pattern_data:
-                qualified_results.append(pattern_data)
-                
-        except Exception as e:
-            # Skip any ticker that encounters a temporary data lookup error
-            continue
+@app.get("/api/health")
+def health_check():
+    return {"status": "ok"}
 
-    return {
-        "status": "success",
-        "count": len(qualified_results),
-        "data": qualified_results
-    }
+@app.get("/api/scan-market")
 def scan_market():
     results = []
     with ThreadPoolExecutor(max_workers=10) as executor:
