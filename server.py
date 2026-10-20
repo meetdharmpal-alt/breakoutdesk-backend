@@ -183,6 +183,36 @@ def home():
     return {"status": "online", "message": "BreakoutDesk Pattern Screener is running!"}
 
 @app.get("/api/scan-market")
+@app.get("/api/scan-market")
+def scan_market():
+    # Your full list of Indian stock tickers (approx 100+ tickers)
+    watchlist = ["TCS.NS", "INFY.NS", "SBIN.NS", "RELIANCE.NS", "BHARTIARTL.NS", "HDFCBANK.NS", "WIPRO.NS", "SUNPHARMA.NS", ...] 
+    
+    qualified_results = []
+    
+    for ticker in watchlist:
+        try:
+            # --- STEP 2: APPLY FUNDAMENTAL FILTER FIRST ---
+            # Skips any stock failing the 15%+ ROE, ROCE, Sales & Profit CAGR rule
+            if not check_fundamentals(ticker):
+                continue
+                
+            # --- YOUR EXISTING TECHNICAL PATTERN SCREENER LOGIC ---
+            # (Your code that fetches OHLC history, detects Inverse H&S, Double Bottom, etc.)
+            pattern_data = detect_technical_pattern(ticker)  # (Keep your existing pattern detection function name here)
+            
+            if pattern_data:
+                qualified_results.append(pattern_data)
+                
+        except Exception as e:
+            # Skip any ticker that encounters a temporary data lookup error
+            continue
+
+    return {
+        "status": "success",
+        "count": len(qualified_results),
+        "data": qualified_results
+    }
 def scan_market():
     results = []
     with ThreadPoolExecutor(max_workers=10) as executor:
