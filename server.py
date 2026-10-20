@@ -131,11 +131,16 @@ def evaluate_custom_strategy(df, strategy_name):
 
     return True
 
-# --- NOTIFICATION HOOK ---
+# --- NOTIFICATION HOOK (DEDUPLICATED) ---
 def send_entry_notification(ticker, pattern, entry_price, target, sl):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    msg = f"🚨 [ENTRY TRIGGERED] {ticker} | Pattern: {pattern} | Entry: ₹{entry_price} | Target: ₹{target} | SL: ₹{sl} ({timestamp})"
+    msg = f"[ENTRY TRIGGERED] {ticker} | Pattern: {pattern} | Entry: Rs. {entry_price} | Target: Rs. {target} | SL: Rs. {sl}"
     
+    # Prevent duplicate notification logs for the same ticker
+    recent_tickers = [log.get("ticker") for log in TRADING_CONFIG["trade_logs"][-15:]]
+    if ticker in recent_tickers:
+        return
+
     TRADING_CONFIG["trade_logs"].append({"timestamp": timestamp, "message": msg, "ticker": ticker, "type": "NOTIFICATION"})
     print(msg)
 
@@ -184,7 +189,7 @@ def process_paper_and_algo_trade(ticker, pattern, entry_price, target, sl, curre
 
     TRADING_CONFIG["active_positions"].append(new_position)
     
-    log_msg = f"🤖 [ALGO PAPER BUY] Executed {quantity} shares of {ticker} at ₹{entry_price} (Invested: ₹{round(invested_amount, 2)})"
+    log_msg = f"[ALGO PAPER BUY] Executed {quantity} shares of {ticker} at Rs. {entry_price} (Invested: Rs. {round(invested_amount, 2)})"
     TRADING_CONFIG["trade_logs"].append({
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "message": log_msg,
