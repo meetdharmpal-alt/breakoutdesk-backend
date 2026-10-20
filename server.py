@@ -6,7 +6,7 @@ import pandas as pd
 import yfinance as yf
 import requests
 from scipy.signal import argrelextrema
-from fastapi import FastAPI, BackgroundTasks
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import os
 import uvicorn
@@ -58,9 +58,9 @@ TRADING_CONFIG = {
     "paper_trading_enabled": True,
     "algo_trading_enabled": False,
     "selected_strategy": "Breakout Momentum v1",
-    "paper_funds": 1000000.0,  # Starting Paper Trading Virtual Balance (10 Lakhs INR)
+    "paper_funds": 1000000.0,
     "initial_funds": 1000000.0,
-    "position_size_pct": 0.10,  # 10% capital per trade
+    "position_size_pct": 0.10,
     "telegram_bot_token": "",
     "telegram_chat_id": "",
     "notification_email": "",
@@ -70,15 +70,10 @@ TRADING_CONFIG = {
 
 # --- FUNDAMENTAL QUALITY CHECK ENGINE ---
 def check_fundamentals(ticker_symbol, stock_obj=None):
-    """
-    Evaluates 15%+ ROE, ROCE, 3-Yr Sales CAGR, and 3-Yr Profit CAGR.
-    Fails safely to prevent crashes if Yahoo Finance lacks specific data rows.
-    """
     try:
         stock = stock_obj if stock_obj else yf.Ticker(ticker_symbol, session=session)
         info = stock.info or {}
         
-        # 1. ROE and ROCE checks
         roe = info.get('returnOnEquity')
         roce = info.get('returnOnCapitalEmployed')
         
@@ -87,10 +82,8 @@ def check_fundamentals(ticker_symbol, stock_obj=None):
         if roce is not None and roce < 0.15:
             return False
 
-        # 2. Multi-year Sales & Profit CAGR checks
         financials = stock.financials
         if financials is not None and not financials.empty:
-            # Sales / Revenue CAGR
             rev_rows = [r for r in financials.index if 'Total Revenue' in str(r) or 'Revenue' in str(r)]
             if rev_rows:
                 revs = financials.loc[rev_rows[0]].dropna().sort_index()
@@ -101,7 +94,6 @@ def check_fundamentals(ticker_symbol, stock_obj=None):
                         if sales_cagr < 0.15:
                             return False
 
-            # Net Income / Profit CAGR
             net_rows = [r for r in financials.index if 'Net Income' in str(r)]
             if net_rows:
                 profits = financials.loc[net_rows[0]].dropna().sort_index()
@@ -114,14 +106,10 @@ def check_fundamentals(ticker_symbol, stock_obj=None):
 
         return True
     except Exception:
-        # Default to True on unexpected lookup errors to avoid scanner lockouts
         return True
 
 # --- FUTURE STRATEGY ENGINE ---
 def evaluate_custom_strategy(df, strategy_name):
-    """
-    Extensible module for supporting present and future custom trading strategies.
-    """
     closes = df['Close'].values
     highs = df['High'].values
     lows = df['Low'].values
@@ -141,22 +129,16 @@ def evaluate_custom_strategy(df, strategy_name):
         open_p, low_p, close_p = df['Open'].iloc[-1], df['Low'].iloc[-1], df['Close'].iloc[-1]
         return (open_p == low_p) and (close_p > open_p)
 
-    # Default strategy: Breakout Momentum v1
     return True
 
 # --- NOTIFICATION HOOK ---
 def send_entry_notification(ticker, pattern, entry_price, target, sl):
-    """
-    Sends single notifications via Telegram / Email / Logging hooks.
-    """
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     msg = f"🚨 [ENTRY TRIGGERED] {ticker} | Pattern: {pattern} | Entry: ₹{entry_price} | Target: ₹{target} | SL: ₹{sl} ({timestamp})"
     
-    # Store in memory trade logs
     TRADING_CONFIG["trade_logs"].append({"timestamp": timestamp, "message": msg, "ticker": ticker, "type": "NOTIFICATION"})
     print(msg)
 
-    # Optional Telegram Dispatcher
     bot_token = TRADING_CONFIG.get("telegram_bot_token")
     chat_id = TRADING_CONFIG.get("telegram_chat_id")
     if bot_token and chat_id:
@@ -168,23 +150,18 @@ def send_entry_notification(ticker, pattern, entry_price, target, sl):
 
 # --- AUTOMATED ALGO & PAPER EXECUTION MODULE ---
 def process_paper_and_algo_trade(ticker, pattern, entry_price, target, sl, current_price):
-    """
-    Executes trades using Paper Trading funds when Algo Trading is enabled.
-    """
     if not TRADING_CONFIG["algo_trading_enabled"] or not TRADING_CONFIG["paper_trading_enabled"]:
         return
 
-    # Check if position already exists
     existing = [p for p in TRADING_CONFIG["active_positions"] if p["ticker"] == ticker]
     if existing:
-        return  # Position already open
+        return
 
-    # Allocate position sizing
     available_funds = TRADING_CONFIG["paper_funds"]
     allocation = available_funds * TRADING_CONFIG["position_size_pct"]
     
     if allocation < entry_price:
-        return  # Insufficient paper funds
+        return
 
     quantity = int(allocation // entry_price)
     if quantity <= 0:
@@ -220,6 +197,7 @@ def identify_chart_pattern(df):
     highs = df['High'].values
     lows = df['Low'].values
     volumes = df['Volume'].values
+    dates = [idx.strftime('%Y-%m-%d') if hasattr(idx, 'strftime') else str(idx)[:10] for idx in df.index]
     
     current_price = closes[-1]
     vol_sma = np.mean(volumes[-20:])
@@ -229,51 +207,68 @@ def identify_chart_pattern(df):
 
     recent_lows_idx = argrelextrema(lows[-60:], np.less, order=2)[0]
     recent_maxs_idx = argrelextrema(highs[-60:], np.greater, order=2)[0]
+    offset = len(df) - 60 if len(df) >= 60 else 0
 
     # 1. High Tight Flag
     price_40_bars_ago = closes[-40] if len(closes) >= 40 else closes[0]
     gain_pct = (current_price - price_40_bars_ago) / price_40_bars_ago
     recent_range = (np.max(highs[-10:]) - np.min(lows[-10:])) / current_price
     if gain_pct >= 0.30 and recent_range <= 0.09:
-        return "High Tight Flag", round(current_price * 1.02, 2), round(current_price * 1.08, 2), round(current_price * 0.95, 2)
+        trend_pts = [
+            {"time": dates[-10], "value": round(float(highs[-10]), 2)},
+            {"time": dates[-1], "value": round(float(lows[-1]), 2)}
+        ]
+        return "High Tight Flag", round(current_price * 1.02, 2), round(current_price * 1.08, 2), round(current_price * 0.95, 2), trend_pts
 
     # 2. Inverse Head & Shoulders
     if len(recent_lows_idx) >= 3:
-        troughs = lows[-60:][recent_lows_idx]
-        if len(troughs) >= 3:
-            left_trough, head, right_trough = troughs[-3], troughs[-2], troughs[-1]
-            if head < left_trough and head < right_trough:
-                return "Inverse H&S", round(current_price * 1.005, 2), round(current_price * 1.07, 2), round(head * 0.97, 2)
+        i1, i2, i3 = recent_lows_idx[-3], recent_lows_idx[-2], recent_lows_idx[-1]
+        troughs = lows[-60:][[i1, i2, i3]]
+        if troughs[1] < troughs[0] and troughs[1] < troughs[2]:
+            trend_pts = [
+                {"time": dates[offset + i1], "value": round(float(troughs[0]), 2)},
+                {"time": dates[offset + i2], "value": round(float(troughs[1]), 2)},
+                {"time": dates[offset + i3], "value": round(float(troughs[2]), 2)}
+            ]
+            return "Inverse H&S", round(current_price * 1.005, 2), round(current_price * 1.07, 2), round(troughs[1] * 0.97, 2), trend_pts
 
     # 3. Double Bottom
     if len(recent_lows_idx) >= 2:
-        b1, b2 = lows[-60:][recent_lows_idx[-2]], lows[-60:][recent_lows_idx[-1]]
+        i1, i2 = recent_lows_idx[-2], recent_lows_idx[-1]
+        b1, b2 = lows[-60:][i1], lows[-60:][i2]
         if abs(b1 - b2) / b1 < 0.04:
-            return "Double Bottom", round(current_price * 1.005, 2), round(current_price * 1.06, 2), round(min(b1, b2) * 0.97, 2)
+            trend_pts = [
+                {"time": dates[offset + i1], "value": round(float(b1), 2)},
+                {"time": dates[offset + i2], "value": round(float(b2), 2)}
+            ]
+            return "Double Bottom", round(current_price * 1.005, 2), round(current_price * 1.06, 2), round(min(b1, b2) * 0.97, 2), trend_pts
 
     # 4. Ascending Triangle
     if len(recent_maxs_idx) >= 2 and len(recent_lows_idx) >= 2:
-        recent_high_vals = highs[-60:][recent_maxs_idx]
-        recent_low_vals = lows[-60:][recent_lows_idx]
-        flat_resistance = abs(recent_high_vals[-1] - recent_high_vals[-2]) / recent_high_vals[-1] < 0.03
-        if flat_resistance:
-            resistance_level = recent_high_vals[-1]
-            return "Ascending Triangle", round(resistance_level * 1.002, 2), round(resistance_level * 1.07, 2), round(recent_low_vals[-1] * 0.97, 2)
+        i_high1, i_high2 = recent_maxs_idx[-2], recent_maxs_idx[-1]
+        recent_high_vals = highs[-60:][[i_high1, i_high2]]
+        if abs(recent_high_vals[0] - recent_high_vals[1]) / recent_high_vals[0] < 0.03:
+            resistance_level = recent_high_vals[1]
+            trend_pts = [
+                {"time": dates[offset + i_high1], "value": round(float(resistance_level), 2)},
+                {"time": dates[-1], "value": round(float(resistance_level), 2)}
+            ]
+            return "Ascending Triangle", round(resistance_level * 1.002, 2), round(resistance_level * 1.07, 2), round(lows[-60:][recent_lows_idx[-1]] * 0.97, 2), trend_pts
 
     # 5. Rectangle Breakout
     if is_near_high:
-        return "Rectangle Breakout", round(current_price * 1.005, 2), round(current_price * 1.06, 2), round(current_price * 0.97, 2)
+        trend_pts = [
+            {"time": dates[-30], "value": round(float(high_52w), 2)},
+            {"time": dates[-1], "value": round(float(high_52w), 2)}
+        ]
+        return "Rectangle Breakout", round(current_price * 1.005, 2), round(current_price * 1.06, 2), round(current_price * 0.97, 2), trend_pts
 
-    if is_volume_surge:
-        return "Volume Breakout", round(current_price * 1.002, 2), round(current_price * 1.05, 2), round(current_price * 0.97, 2)
-    
-    return "Consolidation", round(current_price * 1.01, 2), round(current_price * 1.04, 2), round(current_price * 0.97, 2)
+    return "Consolidation", round(current_price * 1.01, 2), round(current_price * 1.04, 2), round(current_price * 0.97, 2), []
 
 def fetch_and_scan_stock(ticker):
     try:
         t = yf.Ticker(ticker, session=session)
         
-        # 1. Fundamental Screening Gatekeeper
         if not check_fundamentals(ticker, stock_obj=t):
             return None
 
@@ -281,11 +276,10 @@ def fetch_and_scan_stock(ticker):
         if df is None or df.empty or len(df) < 30:
             return None
             
-        # 2. Strategy Filter Evaluation
         if not evaluate_custom_strategy(df, TRADING_CONFIG["selected_strategy"]):
             return None
 
-        pattern, entry, target, sl = identify_chart_pattern(df)
+        pattern, entry, target, sl, trend_pts = identify_chart_pattern(df)
         
         last_row = df.iloc[-1]
         prev_row = df.iloc[-2]
@@ -296,7 +290,6 @@ def fetch_and_scan_stock(ticker):
         vol_sma = df['Volume'].rolling(window=20).mean().iloc[-1]
         is_vol = df['Volume'].iloc[-1] >= (vol_sma * 1.15)
 
-        # Trigger notification if entry conditions are triggered
         if price >= entry:
             send_entry_notification(ticker, pattern, entry, target, sl)
             process_paper_and_algo_trade(ticker, pattern, entry, target, sl, price)
@@ -322,12 +315,11 @@ def fetch_and_scan_stock(ticker):
             "target": target,
             "sl": sl,
             "volume": "2.1x ⚡" if is_vol else "1.0x",
-            "ohlc": ohlc
+            "ohlc": ohlc,
+            "trend_pts": trend_pts
         }
     except Exception:
         return None
-
-# --- API ROUTE ENDPOINTS ---
 
 @app.get("/")
 def home():
@@ -367,7 +359,7 @@ def get_algo_dashboard():
         "unrealized_pnl": round(unrealized_pnl, 2),
         "active_positions_count": len(active_positions),
         "active_positions": active_positions,
-        "trade_logs": TRADING_CONFIG["trade_logs"][-50:]  # Last 50 execution logs
+        "trade_logs": TRADING_CONFIG["trade_logs"][-50:]
     }
 
 @app.get("/api/scan-market")
