@@ -27,7 +27,7 @@ session.headers.update({
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
 })
 
-# Expanded High-Liquidity Watchlist covering Nifty 100, Midcap 100 & Key F&O Equities
+# High-liquidity Indian equities watchlist across sectors
 WATCHLIST = [
     # BLUECHIPS & NIFTY 50
     'RELIANCE.NS', 'TCS.NS', 'INFY.NS', 'HDFCBANK.NS', 'ICICIBANK.NS', 'SBIN.NS', 
@@ -47,7 +47,7 @@ WATCHLIST = [
     'SAIL.NS', 'NMDC.NS', 'NATIONALUM.NS', 'HINDALCO.NS', 'JINDALSTEL.NS',
     'TATACOMM.NS', 'LTIM.NS', 'MPHASIS.NS', 'DIXON.NS', 'KALYANKJIL.NS',
     'MAXHEALTH.NS', 'MANAPPURAM.NS', 'MUTHOOTFIN.NS', 'M&MFIN.NS', 'CHOLAFIN.NS',
-    'OBEROIRLTY.NS', 'DLF.NS', 'GODREJPROP.NS', 'PHOENIXLTD.NS', 'PERSISTENT.NS',
+    'OBEROIRLTY.NS', 'DLF.NS', 'GODREJPROP.NS', 'PHOENIXLTD.NS',
     'OFSS.NS', 'CYIENT.NS', 'KPITTECH.NS', 'TATAELXSI.NS', 'TATAINVEST.NS',
     'ASTRAL.NS', 'SUPREMEIND.NS', 'PIIND.NS', 'UPL.NS', 'SRF.NS', 'DEEPAKNTR.NS',
     'TATACHEM.NS', 'PIDILITIND.NS', 'BERGEPAINT.NS', 'COLPAL.NS', 'DABUR.NS',
@@ -57,15 +57,8 @@ WATCHLIST = [
     'ABB.NS', 'SIEMENS.NS', 'CGPOWER.NS', 'SOLARINDS.NS', 'KEI.NS', 'AIAENG.NS'
 ]
 
-def calculate_indicators(df):
+def calculate_volume_and_breakout(df):
     df = df.copy()
-    df['EMA200'] = df['Close'].ewm(span=200, adjust=False).mean()
-    df['SMA20'] = df['Close'].rolling(window=20).mean()
-    delta = df['Close'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-    rs = gain / loss
-    df['RSI'] = 100 - (100 / (1 + rs))
     df['Vol_SMA20'] = df['Volume'].rolling(window=20).mean()
     df['Volume_Surge'] = df['Volume'] >= (df['Vol_SMA20'] * 1.5)
     df['High_52W'] = df['High'].rolling(window=252, min_periods=50).max()
@@ -95,7 +88,7 @@ def fetch_and_scan_stock(ticker):
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
             
-        df = calculate_indicators(df)
+        df = calculate_volume_and_breakout(df)
         recent_df = df.iloc[-30:].copy()
         recent_df = find_pivots(recent_df, order=2)
         
@@ -105,7 +98,6 @@ def fetch_and_scan_stock(ticker):
         price = float(last_row['Close'])
         prev_close = float(prev_row['Close'])
         chg = round(((price - prev_close) / prev_close) * 100, 2)
-        rsi = round(float(last_row['RSI']), 1)
         is_vol = bool(last_row['Volume_Surge'])
         
         pattern = "Consolidation"
@@ -120,14 +112,14 @@ def fetch_and_scan_stock(ticker):
             target_price = round(price * 1.08, 2)
             sl_price = round(price * 0.96, 2)
             rrr = "1:2.0"
-        elif is_vol and rsi > 50:
+        elif is_vol:
             pattern = "Momentum Breakout"
             entry_price = round(price * 1.002, 2)
             target_price = round(price * 1.06, 2)
             sl_price = round(price * 0.97, 2)
             rrr = "1:2.0"
 
-        # Prepare OHLC candles for frontend chart modal
+        # Prepare formatted OHLC candles for frontend chart modal
         ohlc = []
         for idx, row in df.iloc[-30:].iterrows():
             date_str = idx.strftime('%Y-%m-%d') if hasattr(idx, 'strftime') else str(idx)[:10]
@@ -144,7 +136,6 @@ def fetch_and_scan_stock(ticker):
             "name": ticker.replace(".NS", ""),
             "price": round(price, 2),
             "chg": chg,
-            "rsi": rsi,
             "pattern": pattern,
             "entry": entry_price,
             "target": target_price,
