@@ -60,18 +60,18 @@ def identify_chart_pattern(df):
     
     current_price = closes[-1]
     vol_sma = np.mean(volumes[-20:])
-    is_volume_surge = volumes[-1] >= (vol_sma * 1.2)
+    is_volume_surge = volumes[-1] >= (vol_sma * 1.15)
     high_52w = np.max(highs[-252:]) if len(highs) >= 252 else np.max(highs)
     is_near_high = current_price >= (high_52w * 0.95)
 
-    recent_lows_idx = argrelextrema(lows[-60:], np.less, order=3)[0]
-    recent_maxs_idx = argrelextrema(highs[-60:], np.greater, order=order)[0]
+    recent_lows_idx = argrelextrema(lows[-60:], np.less, order=2)[0]
+    recent_maxs_idx = argrelextrema(highs[-60:], np.greater, order=2)[0]
 
     # 1. High Tight Flag
     price_40_bars_ago = closes[-40] if len(closes) >= 40 else closes[0]
     gain_pct = (current_price - price_40_bars_ago) / price_40_bars_ago
     recent_range = (np.max(highs[-10:]) - np.min(lows[-10:])) / current_price
-    if gain_pct >= 0.35 and recent_range <= 0.08:
+    if gain_pct >= 0.30 and recent_range <= 0.09:
         return "High Tight Flag", round(current_price * 1.02, 2), round(current_price * 1.08, 2), round(current_price * 0.95, 2)
 
     # 2. Inverse Head & Shoulders
@@ -92,7 +92,7 @@ def identify_chart_pattern(df):
     if len(recent_maxs_idx) >= 2 and len(recent_lows_idx) >= 2:
         recent_high_vals = highs[-60:][recent_maxs_idx]
         recent_low_vals = lows[-60:][recent_lows_idx]
-        flat_resistance = abs(recent_high_vals[-1] - recent_high_vals[-2]) / recent_high_vals[-1] < 0.025
+        flat_resistance = abs(recent_high_vals[-1] - recent_high_vals[-2]) / recent_high_vals[-1] < 0.03
         if flat_resistance:
             resistance_level = recent_high_vals[-1]
             return "Ascending Triangle", round(resistance_level * 1.002, 2), round(resistance_level * 1.07, 2), round(recent_low_vals[-1] * 0.97, 2)
@@ -108,12 +108,10 @@ def identify_chart_pattern(df):
 
 def fetch_and_scan_stock(ticker):
     try:
-        df = yf.download(ticker, period="3mo", interval="1d", progress=False, auto_adjust=True, session=session)
-        if df.empty or len(df) < 40:
+        t = yf.Ticker(ticker, session=session)
+        df = t.history(period="3mo", auto_adjust=True)
+        if df is None or df.empty or len(df) < 30:
             return None
-            
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
             
         pattern, entry, target, sl = identify_chart_pattern(df)
         
@@ -124,7 +122,7 @@ def fetch_and_scan_stock(ticker):
         chg = round(((price - prev_close) / prev_close) * 100, 2)
         
         vol_sma = df['Volume'].rolling(window=20).mean().iloc[-1]
-        is_vol = df['Volume'].iloc[-1] >= (vol_sma * 1.2)
+        is_vol = df['Volume'].iloc[-1] >= (vol_sma * 1.15)
 
         ohlc = []
         for idx, row in df.iloc[-50:].iterrows():
@@ -159,7 +157,7 @@ def home():
 @app.get("/api/scan-market")
 def scan_market():
     results = []
-    with ThreadPoolExecutor(max_workers=12) as executor:
+    with ThreadPoolExecutor(max_workers=10) as executor:
         futures = {executor.submit(fetch_and_scan_stock, ticker): ticker for ticker in WATCHLIST}
         for future in as_completed(futures):
             res = future.result()
