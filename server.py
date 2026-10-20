@@ -27,9 +27,8 @@ session.headers.update({
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
 })
 
-# High-liquidity Indian equities watchlist across sectors
+# Comprehensive Indian Stock Universe (Nifty 100, Midcaps & F&O Leaders)
 WATCHLIST = [
-    # BLUECHIPS & NIFTY 50
     'RELIANCE.NS', 'TCS.NS', 'INFY.NS', 'HDFCBANK.NS', 'ICICIBANK.NS', 'SBIN.NS', 
     'ITC.NS', 'BHARTIARTL.NS', 'WIPRO.NS', 'AXISBANK.NS', 'KOTAKBANK.NS', 'LT.NS', 
     'SUNPHARMA.NS', 'BAJFINANCE.NS', 'ASIANPAINT.NS', 'MARUTI.NS', 'TITAN.NS', 
@@ -39,89 +38,113 @@ WATCHLIST = [
     'GRASIM.NS', 'TECHM.NS', 'HDFCLIFE.NS', 'SBILIFE.NS', 'HEROMOTOCO.NS',
     'EICHERMOT.NS', 'DIVISLAB.NS', 'BPCL.NS', 'BRITANNIA.NS', 'CIPLA.NS',
     'APOLLOHOSP.NS', 'TATACONSUM.NS', 'BEL.NS', 'TRENT.NS', 'HAL.NS', 'VBL.NS',
-    
-    # HIGH MOMENTUM MIDCAPS & F&O LEADERS
     'ZOMATO.NS', 'JIOFIN.NS', 'BSE.NS', 'IREDA.NS', 'NHPC.NS', 'REC.NS', 'PFC.NS',
     'IRFC.NS', 'RVNL.NS', 'SUZLON.NS', 'TATAPOWER.NS', 'MOTHERSON.NS', 'GAIL.NS',
     'INDUSTOWER.NS', 'INDIANB.NS', 'FEDERALBNK.NS', 'IDFCFIRSTB.NS', 'BANDHANBNK.NS',
     'SAIL.NS', 'NMDC.NS', 'NATIONALUM.NS', 'HINDALCO.NS', 'JINDALSTEL.NS',
     'TATACOMM.NS', 'LTIM.NS', 'MPHASIS.NS', 'DIXON.NS', 'KALYANKJIL.NS',
     'MAXHEALTH.NS', 'MANAPPURAM.NS', 'MUTHOOTFIN.NS', 'M&MFIN.NS', 'CHOLAFIN.NS',
-    'OBEROIRLTY.NS', 'DLF.NS', 'GODREJPROP.NS', 'PHOENIXLTD.NS',
-    'OFSS.NS', 'CYIENT.NS', 'KPITTECH.NS', 'TATAELXSI.NS', 'TATAINVEST.NS',
-    'ASTRAL.NS', 'SUPREMEIND.NS', 'PIIND.NS', 'UPL.NS', 'SRF.NS', 'DEEPAKNTR.NS',
-    'TATACHEM.NS', 'PIDILITIND.NS', 'BERGEPAINT.NS', 'COLPAL.NS', 'DABUR.NS',
-    'GODREJCP.NS', 'MARICO.NS', 'PGHH.NS', 'TORNTPHARM.NS', 'LUPIN.NS', 'MANKIND.NS',
-    'ALKEM.NS', 'GLENMARK.NS', 'AUROPHARMA.NS', 'ZYDUSLIFE.NS', 'IPCALAB.NS',
-    'BOSCHLTD.NS', 'MRF.NS', 'BALKRISIND.NS', 'TIINDIA.NS', 'CUMMINSIND.NS',
-    'ABB.NS', 'SIEMENS.NS', 'CGPOWER.NS', 'SOLARINDS.NS', 'KEI.NS', 'AIAENG.NS'
+    'OBEROIRLTY.NS', 'DLF.NS', 'GODREJPROP.NS', 'PHOENIXLTD.NS', 'OFSS.NS',
+    'CYIENT.NS', 'KPITTECH.NS', 'TATAELXSI.NS', 'TATAINVEST.NS', 'ASTRAL.NS',
+    'SUPREMEIND.NS', 'PIIND.NS', 'UPL.NS', 'SRF.NS', 'DEEPAKNTR.NS', 'TATACHEM.NS',
+    'PIDILITIND.NS', 'BERGEPAINT.NS', 'COLPAL.NS', 'DABUR.NS', 'GODREJCP.NS',
+    'MARICO.NS', 'PGHH.NS', 'TORNTPHARM.NS', 'LUPIN.NS', 'MANKIND.NS', 'ALKEM.NS',
+    'GLENMARK.NS', 'AUROPHARMA.NS', 'ZYDUSLIFE.NS', 'IPCALAB.NS', 'BOSCHLTD.NS',
+    'MRF.NS', 'BALKRISIND.NS', 'TIINDIA.NS', 'CUMMINSIND.NS', 'ABB.NS', 'SIEMENS.NS',
+    'CGPOWER.NS', 'SOLARINDS.NS', 'KEI.NS', 'AIAENG.NS'
 ]
 
-def calculate_volume_and_breakout(df):
-    df = df.copy()
-    df['Vol_SMA20'] = df['Volume'].rolling(window=20).mean()
-    df['Volume_Surge'] = df['Volume'] >= (df['Vol_SMA20'] * 1.5)
-    df['High_52W'] = df['High'].rolling(window=252, min_periods=50).max()
-    df['Is_52W_High'] = df['Close'] >= df['High_52W'] * 0.99
-    return df
+def identify_chart_pattern(df):
+    """
+    Scans price action & pivot structures for:
+    - Inverse Head & Shoulders
+    - Double Bottom
+    - High Tight Flag
+    - Rectangle Top / Resistance Channel Breakout
+    - Ascending Triangle
+    """
+    closes = df['Close'].values
+    highs = df['High'].values
+    lows = df['Low'].values
+    volumes = df['Volume'].values
+    
+    current_price = closes[-1]
+    vol_sma = np.mean(volumes[-20:])
+    is_volume_surge = volumes[-1] >= (vol_sma * 1.3)
+    
+    # 52-Week High Reference
+    high_52w = np.max(highs[-252:]) if len(highs) >= 252 else np.max(highs)
+    is_near_high = current_price >= (high_52w * 0.98)
 
-def find_pivots(df, order=2):
-    df = df.copy()
-    local_max = argrelextrema(df['High'].values, np.greater, order=order)[0]
-    local_min = argrelextrema(df['Low'].values, np.less, order=order)[0]
-    df['Pivot'] = 0
-    df['PivotPrice'] = np.nan
-    if len(local_max) > 0:
-        df.iloc[local_max, df.columns.get_loc('Pivot')] = 1
-        df.iloc[local_max, df.columns.get_loc('PivotPrice')] = df.iloc[local_max]['High']
-    if len(local_min) > 0:
-        df.iloc[local_min, df.columns.get_loc('Pivot')] = -1
-        df.iloc[local_min, df.columns.get_loc('PivotPrice')] = df.iloc[local_min]['Low']
-    return df
+    # Find local minimums and maximums over last 60 bars
+    recent_lows_idx = argrelextrema(lows[-60:], np.less, order=3)[0]
+    recent_maxs_idx = argrelextrema(highs[-60:], np.greater, order=3)[0]
+
+    # 1. High Tight Flag (Price doubled or gained > 50% in last 40 bars and consolidating tight)
+    price_40_bars_ago = closes[-40] if len(closes) >= 40 else closes[0]
+    gain_pct = (current_price - price_40_bars_ago) / price_40_bars_ago
+    recent_range = (np.max(highs[-10:]) - np.min(lows[-10:])) / current_price
+    if gain_pct >= 0.45 and recent_range <= 0.06:
+        return "High Tight Flag", round(current_price * 1.02, 2), round(current_price * 1.08, 2), round(current_price * 0.96, 2)
+
+    # 2. Inverse Head & Shoulders (3 troughs where middle trough is lowest)
+    if len(recent_lows_idx) >= 3:
+        troughs = lows[-60:][recent_lows_idx]
+        if len(troughs) >= 3:
+            left_trough, head, right_trough = troughs[-3], troughs[-2], troughs[-1]
+            if head < left_trough and head < right_trough and abs(left_trough - right_trough) / left_trough < 0.03:
+                if current_price >= left_trough * 1.02:
+                    return "Inverse H&S", round(current_price * 1.005, 2), round(current_price * 1.07, 2), round(head * 0.98, 2)
+
+    # 3. Double Bottom (Two roughly equal lows separated by a peak)
+    if len(recent_lows_idx) >= 2:
+        b1, b2 = lows[-60:][recent_lows_idx[-2]], lows[-60:][recent_lows_idx[-1]]
+        if abs(b1 - b2) / b1 < 0.025 and is_volume_surge:
+            return "Double Bottom", round(current_price * 1.005, 2), round(current_price * 1.06, 2), round(min(b1, b2) * 0.98, 2)
+
+    # 4. Ascending Triangle (Flat resistance highs + rising higher lows)
+    if len(recent_maxs_idx) >= 2 and len(recent_lows_idx) >= 2:
+        recent_high_vals = highs[-60:][recent_maxs_idx]
+        recent_low_vals = lows[-60:][recent_lows_idx]
+        flat_resistance = abs(recent_high_vals[-1] - recent_high_vals[-2]) / recent_high_vals[-1] < 0.015
+        rising_lows = recent_low_vals[-1] > recent_low_vals[-2]
+        if flat_resistance and rising_lows and is_volume_surge:
+            resistance_level = recent_high_vals[-1]
+            return "Ascending Triangle", round(resistance_level * 1.002, 2), round(resistance_level * 1.07, 2), round(recent_low_vals[-1] * 0.98, 2)
+
+    # 5. Rectangle Top / Channel Breakout
+    if is_near_high and is_volume_surge:
+        return "Rectangle Breakout", round(current_price * 1.005, 2), round(current_price * 1.06, 2), round(current_price * 0.97, 2)
+
+    # Default general momentum setup
+    if is_volume_surge:
+        return "Volume Breakout", round(current_price * 1.002, 2), round(current_price * 1.05, 2), round(current_price * 0.97, 2)
+    
+    return "Consolidation", round(current_price * 1.01, 2), round(current_price * 1.04, 2), round(current_price * 0.97, 2)
 
 def fetch_and_scan_stock(ticker):
     try:
         df = yf.download(ticker, period="3mo", interval="1d", progress=False, auto_adjust=True, session=session)
-        if df.empty or len(df) < 30:
+        if df.empty or len(df) < 40:
             return None
             
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
             
-        df = calculate_volume_and_breakout(df)
-        recent_df = df.iloc[-30:].copy()
-        recent_df = find_pivots(recent_df, order=2)
+        pattern, entry, target, sl = identify_chart_pattern(df)
         
-        last_row = recent_df.iloc[-1]
-        prev_row = recent_df.iloc[-2]
-        
+        last_row = df.iloc[-1]
+        prev_row = df.iloc[-2]
         price = float(last_row['Close'])
         prev_close = float(prev_row['Close'])
         chg = round(((price - prev_close) / prev_close) * 100, 2)
-        is_vol = bool(last_row['Volume_Surge'])
         
-        pattern = "Consolidation"
-        entry_price = round(price, 2)
-        target_price = round(price * 1.05, 2)
-        sl_price = round(price * 0.97, 2)
-        rrr = "1:1.6"
-        
-        if bool(last_row['Is_52W_High']) and is_vol:
-            pattern = "52-Week High Breakout"
-            entry_price = round(price * 1.005, 2)
-            target_price = round(price * 1.08, 2)
-            sl_price = round(price * 0.96, 2)
-            rrr = "1:2.0"
-        elif is_vol:
-            pattern = "Momentum Breakout"
-            entry_price = round(price * 1.002, 2)
-            target_price = round(price * 1.06, 2)
-            sl_price = round(price * 0.97, 2)
-            rrr = "1:2.0"
+        vol_sma = df['Volume'].rolling(window=20).mean().iloc[-1]
+        is_vol = df['Volume'].iloc[-1] >= (vol_sma * 1.3)
 
         # Prepare formatted OHLC candles for frontend chart modal
         ohlc = []
-        for idx, row in df.iloc[-30:].iterrows():
+        for idx, row in df.iloc[-50:].iterrows():
             date_str = idx.strftime('%Y-%m-%d') if hasattr(idx, 'strftime') else str(idx)[:10]
             ohlc.append({
                 "time": date_str,
@@ -137,11 +160,10 @@ def fetch_and_scan_stock(ticker):
             "price": round(price, 2),
             "chg": chg,
             "pattern": pattern,
-            "entry": entry_price,
-            "target": target_price,
-            "sl": sl_price,
+            "entry": entry,
+            "target": target,
+            "sl": sl,
             "volume": "2.1x ⚡" if is_vol else "1.0x",
-            "rrr": rrr,
             "ohlc": ohlc
         }
     except Exception as e:
@@ -149,7 +171,7 @@ def fetch_and_scan_stock(ticker):
 
 @app.get("/")
 def home():
-    return {"status": "online", "message": "BreakoutDesk Cloud Backend is running successfully!"}
+    return {"status": "online", "message": "BreakoutDesk Advanced Pattern Screener is running!"}
 
 @app.get("/api/scan-market")
 def scan_market():
