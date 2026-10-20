@@ -6,13 +6,14 @@ import pandas as pd
 import yfinance as yf
 import requests
 from scipy.signal import argrelextrema
-from fastapi import FastAPI
+from fastapi import FastAPI, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 import os
 import uvicorn
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 
-app = FastAPI(title="BreakoutDesk Pattern Screener")
+app = FastAPI(title="BreakoutDesk Pattern Screener & Algo Terminal")
 
 app.add_middleware(
     CORSMiddleware,
@@ -52,17 +53,32 @@ WATCHLIST = [
     'ABB.NS', 'SIEMENS.NS', 'CGPOWER.NS', 'SOLARINDS.NS', 'KEI.NS', 'AIAENG.NS'
 ]
 
-# --- SAFE FUNDAMENTAL QUALITY CHECKER ---
+# --- GLOBAL TERMINAL STATE & ALGO CONFIGURATION ---
+TRADING_CONFIG = {
+    "paper_trading_enabled": True,
+    "algo_trading_enabled": False,
+    "selected_strategy": "Breakout Momentum v1",
+    "paper_funds": 1000000.0,  # Starting Paper Trading Virtual Balance (10 Lakhs INR)
+    "initial_funds": 1000000.0,
+    "position_size_pct": 0.10,  # 10% capital per trade
+    "telegram_bot_token": "",
+    "telegram_chat_id": "",
+    "notification_email": "",
+    "active_positions": [],
+    "trade_logs": []
+}
+
+# --- FUNDAMENTAL QUALITY CHECK ENGINE ---
 def check_fundamentals(ticker_symbol, stock_obj=None):
     """
-    Checks 15%+ threshold for ROE, ROCE, Sales CAGR, and Profit CAGR.
-    Fails safely on missing data to avoid deployment crashes.
+    Evaluates 15%+ ROE, ROCE, 3-Yr Sales CAGR, and 3-Yr Profit CAGR.
+    Fails safely to prevent crashes if Yahoo Finance lacks specific data rows.
     """
     try:
         stock = stock_obj if stock_obj else yf.Ticker(ticker_symbol, session=session)
         info = stock.info or {}
         
-        # 1. Check current ROE & ROCE
+        # 1. ROE and ROCE checks
         roe = info.get('returnOnEquity')
         roce = info.get('returnOnCapitalEmployed')
         
@@ -71,31 +87,133 @@ def check_fundamentals(ticker_symbol, stock_obj=None):
         if roce is not None and roce < 0.15:
             return False
 
-        # 2. Check 3-Year Sales and Profit CAGR from financials
+        # 2. Multi-year Sales & Profit CAGR checks
         financials = stock.financials
         if financials is not None and not financials.empty:
-            # Sales/Revenue check
+            # Sales / Revenue CAGR
             rev_rows = [r for r in financials.index if 'Total Revenue' in str(r) or 'Revenue' in str(r)]
             if rev_rows:
                 revs = financials.loc[rev_rows[0]].dropna().sort_index()
                 if len(revs) >= 4:
                     start_rev, end_rev = revs.iloc[-4], revs.iloc[-1]
-                    if start_rev > 0 and ((end_rev / start_rev) ** (1 / 3) - 1) < 0.15:
-                        return False
+                    if start_rev > 0:
+                        sales_cagr = (end_rev / start_rev) ** (1 / 3) - 1
+                        if sales_cagr < 0.15:
+                            return False
 
-            # Profit/Net Income check
+            # Net Income / Profit CAGR
             net_rows = [r for r in financials.index if 'Net Income' in str(r)]
             if net_rows:
                 profits = financials.loc[net_rows[0]].dropna().sort_index()
                 if len(profits) >= 4:
                     start_prof, end_prof = profits.iloc[-4], profits.iloc[-1]
-                    if start_prof > 0 and ((end_prof / start_prof) ** (1 / 3) - 1) < 0.15:
-                        return False
+                    if start_prof > 0:
+                        profit_cagr = (end_prof / start_prof) ** (1 / 3) - 1
+                        if profit_cagr < 0.15:
+                            return False
 
         return True
     except Exception:
-        # Default to True on missing metric errors so scanner stays functional
+        # Default to True on unexpected lookup errors to avoid scanner lockouts
         return True
+
+# --- FUTURE STRATEGY ENGINE ---
+def evaluate_custom_strategy(df, strategy_name):
+    """
+    Extensible module for supporting present and future custom trading strategies.
+    """
+    closes = df['Close'].values
+    highs = df['High'].values
+    lows = df['Low'].values
+
+    if strategy_name == "VWAP Breakout":
+        tp = (highs + lows + closes) / 3
+        vol = df['Volume'].values
+        vwap = np.sum(tp[-20:] * vol[-20:]) / np.sum(vol[-20:])
+        return closes[-1] > vwap
+        
+    elif strategy_name == "EMA Crossover":
+        ema20 = df['Close'].ewm(span=20, adjust=False).mean().iloc[-1]
+        ema50 = df['Close'].ewm(span=50, adjust=False).mean().iloc[-1]
+        return ema20 > ema50
+
+    elif strategy_name == "Open High Low Reversal":
+        open_p, low_p, close_p = df['Open'].iloc[-1], df['Low'].iloc[-1], df['Close'].iloc[-1]
+        return (open_p == low_p) and (close_p > open_p)
+
+    # Default strategy: Breakout Momentum v1
+    return True
+
+# --- NOTIFICATION HOOK ---
+def send_entry_notification(ticker, pattern, entry_price, target, sl):
+    """
+    Sends single notifications via Telegram / Email / Logging hooks.
+    """
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    msg = f"🚨 [ENTRY TRIGGERED] {ticker} | Pattern: {pattern} | Entry: ₹{entry_price} | Target: ₹{target} | SL: ₹{sl} ({timestamp})"
+    
+    # Store in memory trade logs
+    TRADING_CONFIG["trade_logs"].append({"timestamp": timestamp, "message": msg, "ticker": ticker, "type": "NOTIFICATION"})
+    print(msg)
+
+    # Optional Telegram Dispatcher
+    bot_token = TRADING_CONFIG.get("telegram_bot_token")
+    chat_id = TRADING_CONFIG.get("telegram_chat_id")
+    if bot_token and chat_id:
+        try:
+            url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+            requests.post(url, json={"chat_id": chat_id, "text": msg}, timeout=5)
+        except Exception as e:
+            print(f"Telegram notification dispatch error: {e}")
+
+# --- AUTOMATED ALGO & PAPER EXECUTION MODULE ---
+def process_paper_and_algo_trade(ticker, pattern, entry_price, target, sl, current_price):
+    """
+    Executes trades using Paper Trading funds when Algo Trading is enabled.
+    """
+    if not TRADING_CONFIG["algo_trading_enabled"] or not TRADING_CONFIG["paper_trading_enabled"]:
+        return
+
+    # Check if position already exists
+    existing = [p for p in TRADING_CONFIG["active_positions"] if p["ticker"] == ticker]
+    if existing:
+        return  # Position already open
+
+    # Allocate position sizing
+    available_funds = TRADING_CONFIG["paper_funds"]
+    allocation = available_funds * TRADING_CONFIG["position_size_pct"]
+    
+    if allocation < entry_price:
+        return  # Insufficient paper funds
+
+    quantity = int(allocation // entry_price)
+    if quantity <= 0:
+        return
+
+    invested_amount = quantity * entry_price
+    TRADING_CONFIG["paper_funds"] -= invested_amount
+
+    new_position = {
+        "ticker": ticker,
+        "pattern": pattern,
+        "entry_price": entry_price,
+        "current_price": current_price,
+        "target": target,
+        "sl": sl,
+        "quantity": quantity,
+        "invested": round(invested_amount, 2),
+        "entry_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    }
+
+    TRADING_CONFIG["active_positions"].append(new_position)
+    
+    log_msg = f"🤖 [ALGO PAPER BUY] Executed {quantity} shares of {ticker} at ₹{entry_price} (Invested: ₹{round(invested_amount, 2)})"
+    TRADING_CONFIG["trade_logs"].append({
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "message": log_msg,
+        "ticker": ticker,
+        "type": "EXECUTION"
+    })
 
 def identify_chart_pattern(df):
     closes = df['Close'].values
@@ -155,7 +273,7 @@ def fetch_and_scan_stock(ticker):
     try:
         t = yf.Ticker(ticker, session=session)
         
-        # Fundamental Filter Check
+        # 1. Fundamental Screening Gatekeeper
         if not check_fundamentals(ticker, stock_obj=t):
             return None
 
@@ -163,6 +281,10 @@ def fetch_and_scan_stock(ticker):
         if df is None or df.empty or len(df) < 30:
             return None
             
+        # 2. Strategy Filter Evaluation
+        if not evaluate_custom_strategy(df, TRADING_CONFIG["selected_strategy"]):
+            return None
+
         pattern, entry, target, sl = identify_chart_pattern(df)
         
         last_row = df.iloc[-1]
@@ -173,6 +295,11 @@ def fetch_and_scan_stock(ticker):
         
         vol_sma = df['Volume'].rolling(window=20).mean().iloc[-1]
         is_vol = df['Volume'].iloc[-1] >= (vol_sma * 1.15)
+
+        # Trigger notification if entry conditions are triggered
+        if price >= entry:
+            send_entry_notification(ticker, pattern, entry, target, sl)
+            process_paper_and_algo_trade(ticker, pattern, entry, target, sl, price)
 
         ohlc = []
         for idx, row in df.iloc[-50:].iterrows():
@@ -200,13 +327,48 @@ def fetch_and_scan_stock(ticker):
     except Exception:
         return None
 
+# --- API ROUTE ENDPOINTS ---
+
 @app.get("/")
 def home():
-    return {"status": "online", "message": "BreakoutDesk Pattern Screener is running!"}
+    return {"status": "online", "message": "BreakoutDesk Pattern & Algo Screener is running!"}
 
 @app.get("/api/health")
 def health_check():
     return {"status": "ok"}
+
+@app.get("/api/config")
+def get_config():
+    return {"status": "success", "config": TRADING_CONFIG}
+
+@app.post("/api/config/update")
+def update_config(settings: dict):
+    global TRADING_CONFIG
+    for key, val in settings.items():
+        if key in TRADING_CONFIG:
+            TRADING_CONFIG[key] = val
+    return {"status": "success", "config": TRADING_CONFIG}
+
+@app.get("/api/algo/dashboard")
+def get_algo_dashboard():
+    active_positions = TRADING_CONFIG["active_positions"]
+    invested_capital = sum([p["invested"] for p in active_positions])
+    current_value = sum([p["quantity"] * p["current_price"] for p in active_positions])
+    unrealized_pnl = current_value - invested_capital
+
+    return {
+        "status": "success",
+        "paper_trading_enabled": TRADING_CONFIG["paper_trading_enabled"],
+        "algo_trading_enabled": TRADING_CONFIG["algo_trading_enabled"],
+        "selected_strategy": TRADING_CONFIG["selected_strategy"],
+        "available_paper_funds": round(TRADING_CONFIG["paper_funds"], 2),
+        "invested_capital": round(invested_capital, 2),
+        "current_portfolio_value": round(current_value, 2),
+        "unrealized_pnl": round(unrealized_pnl, 2),
+        "active_positions_count": len(active_positions),
+        "active_positions": active_positions,
+        "trade_logs": TRADING_CONFIG["trade_logs"][-50:]  # Last 50 execution logs
+    }
 
 @app.get("/api/scan-market")
 def scan_market():
