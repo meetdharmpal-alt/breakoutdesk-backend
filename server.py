@@ -27,12 +27,34 @@ session.headers.update({
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
 })
 
+# Expanded High-Liquidity Watchlist covering Nifty 100, Midcap 100 & Key F&O Equities
 WATCHLIST = [
+    # BLUECHIPS & NIFTY 50
     'RELIANCE.NS', 'TCS.NS', 'INFY.NS', 'HDFCBANK.NS', 'ICICIBANK.NS', 'SBIN.NS', 
     'ITC.NS', 'BHARTIARTL.NS', 'WIPRO.NS', 'AXISBANK.NS', 'KOTAKBANK.NS', 'LT.NS', 
     'SUNPHARMA.NS', 'BAJFINANCE.NS', 'ASIANPAINT.NS', 'MARUTI.NS', 'TITAN.NS', 
     'HCLTECH.NS', 'TATASTEEL.NS', 'POWERGRID.NS', 'NTPC.NS', 'ADANIENT.NS', 
-    'JSWSTEEL.NS', 'TATAMOTORS.NS', 'POLYCAB.NS', 'PERSISTENT.NS', 'COFORGE.NS'
+    'JSWSTEEL.NS', 'TATAMOTORS.NS', 'POLYCAB.NS', 'PERSISTENT.NS', 'COFORGE.NS',
+    'ULTRACEMCO.NS', 'BAJAJFINSV.NS', 'NESTLEIND.NS', 'ONGC.NS', 'COALINDIA.NS',
+    'GRASIM.NS', 'TECHM.NS', 'HDFCLIFE.NS', 'SBILIFE.NS', 'HEROMOTOCO.NS',
+    'EICHERMOT.NS', 'DIVISLAB.NS', 'BPCL.NS', 'BRITANNIA.NS', 'CIPLA.NS',
+    'APOLLOHOSP.NS', 'TATACONSUM.NS', 'BEL.NS', 'TRENT.NS', 'HAL.NS', 'VBL.NS',
+    
+    # HIGH MOMENTUM MIDCAPS & F&O LEADERS
+    'ZOMATO.NS', 'JIOFIN.NS', 'BSE.NS', 'IREDA.NS', 'NHPC.NS', 'REC.NS', 'PFC.NS',
+    'IRFC.NS', 'RVNL.NS', 'SUZLON.NS', 'TATAPOWER.NS', 'MOTHERSON.NS', 'GAIL.NS',
+    'INDUSTOWER.NS', 'INDIANB.NS', 'FEDERALBNK.NS', 'IDFCFIRSTB.NS', 'BANDHANBNK.NS',
+    'SAIL.NS', 'NMDC.NS', 'NATIONALUM.NS', 'HINDALCO.NS', 'JINDALSTEL.NS',
+    'TATACOMM.NS', 'LTIM.NS', 'MPHASIS.NS', 'DIXON.NS', 'KALYANKJIL.NS',
+    'MAXHEALTH.NS', 'MANAPPURAM.NS', 'MUTHOOTFIN.NS', 'M&MFIN.NS', 'CHOLAFIN.NS',
+    'OBEROIRLTY.NS', 'DLF.NS', 'GODREJPROP.NS', 'PHOENIXLTD.NS', 'PERSISTENT.NS',
+    'OFSS.NS', 'CYIENT.NS', 'KPITTECH.NS', 'TATAELXSI.NS', 'TATAINVEST.NS',
+    'ASTRAL.NS', 'SUPREMEIND.NS', 'PIIND.NS', 'UPL.NS', 'SRF.NS', 'DEEPAKNTR.NS',
+    'TATACHEM.NS', 'PIDILITIND.NS', 'BERGEPAINT.NS', 'COLPAL.NS', 'DABUR.NS',
+    'GODREJCP.NS', 'MARICO.NS', 'PGHH.NS', 'TORNTPHARM.NS', 'LUPIN.NS', 'MANKIND.NS',
+    'ALKEM.NS', 'GLENMARK.NS', 'AUROPHARMA.NS', 'ZYDUSLIFE.NS', 'IPCALAB.NS',
+    'BOSCHLTD.NS', 'MRF.NS', 'BALKRISIND.NS', 'TIINDIA.NS', 'CUMMINSIND.NS',
+    'ABB.NS', 'SIEMENS.NS', 'CGPOWER.NS', 'SOLARINDS.NS', 'KEI.NS', 'AIAENG.NS'
 ]
 
 def calculate_indicators(df):
@@ -87,17 +109,35 @@ def fetch_and_scan_stock(ticker):
         is_vol = bool(last_row['Volume_Surge'])
         
         pattern = "Consolidation"
-        breakout_price = round(price * 1.01, 2)
-        rrr = "1:2.5"
+        entry_price = round(price, 2)
+        target_price = round(price * 1.05, 2)
+        sl_price = round(price * 0.97, 2)
+        rrr = "1:1.6"
         
         if bool(last_row['Is_52W_High']) and is_vol:
             pattern = "52-Week High Breakout"
-            breakout_price = round(float(last_row['High_52W']), 2)
-            rrr = "1:3.0"
+            entry_price = round(price * 1.005, 2)
+            target_price = round(price * 1.08, 2)
+            sl_price = round(price * 0.96, 2)
+            rrr = "1:2.0"
         elif is_vol and rsi > 50:
             pattern = "Momentum Breakout"
-            breakout_price = round(price * 0.99, 2)
-            rrr = "1:2.8"
+            entry_price = round(price * 1.002, 2)
+            target_price = round(price * 1.06, 2)
+            sl_price = round(price * 0.97, 2)
+            rrr = "1:2.0"
+
+        # Prepare OHLC candles for frontend chart modal
+        ohlc = []
+        for idx, row in df.iloc[-30:].iterrows():
+            date_str = idx.strftime('%Y-%m-%d') if hasattr(idx, 'strftime') else str(idx)[:10]
+            ohlc.append({
+                "time": date_str,
+                "open": round(float(row['Open']), 2),
+                "high": round(float(row['High']), 2),
+                "low": round(float(row['Low']), 2),
+                "close": round(float(row['Close']), 2)
+            })
 
         return {
             "ticker": ticker,
@@ -106,9 +146,12 @@ def fetch_and_scan_stock(ticker):
             "chg": chg,
             "rsi": rsi,
             "pattern": pattern,
-            "breakout": breakout_price,
+            "entry": entry_price,
+            "target": target_price,
+            "sl": sl_price,
             "volume": "2.1x ⚡" if is_vol else "1.0x",
-            "rrr": rrr
+            "rrr": rrr,
+            "ohlc": ohlc
         }
     except Exception as e:
         return None
@@ -120,7 +163,7 @@ def home():
 @app.get("/api/scan-market")
 def scan_market():
     results = []
-    with ThreadPoolExecutor(max_workers=10) as executor:
+    with ThreadPoolExecutor(max_workers=15) as executor:
         futures = {executor.submit(fetch_and_scan_stock, ticker): ticker for ticker in WATCHLIST}
         for future in as_completed(futures):
             res = future.result()
