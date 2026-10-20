@@ -12,7 +12,7 @@ import os
 import uvicorn
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-app = FastAPI(title="BreakoutDesk Fundamental & Pattern Screener")
+app = FastAPI(title="BreakoutDesk Pattern Screener")
 
 app.add_middleware(
     CORSMiddleware,
@@ -52,26 +52,6 @@ WATCHLIST = [
     'ABB.NS', 'SIEMENS.NS', 'CGPOWER.NS', 'SOLARINDS.NS', 'KEI.NS', 'AIAENG.NS'
 ]
 
-def check_robust_fundamentals(ticker_symbol):
-    """
-    Balanced fundamental filter: Checks market cap stability and valuation.
-    If info fails to load due to rate-limits, it allows the stock through 
-    so technical patterns are never missed.
-    """
-    try:
-        t = yf.Ticker(ticker_symbol, session=session)
-        info = t.info
-        
-        # Check if company has reasonable valuation or market standing
-        mcap = info.get('marketCap', 1000000000) # Default large-cap assumption if missing
-        pe = info.get('trailingPE', 25)
-        
-        if pe is not None and (pe < 0 or pe > 85):
-            return False
-        return True
-    except Exception:
-        return True # Fallback pass to avoid blocking valid scans
-
 def identify_chart_pattern(df):
     closes = df['Close'].values
     highs = df['High'].values
@@ -80,9 +60,9 @@ def identify_chart_pattern(df):
     
     current_price = closes[-1]
     vol_sma = np.mean(volumes[-20:])
-    is_volume_surge = volumes[-1] >= (vol_sma * 1.3)
+    is_volume_surge = volumes[-1] >= (vol_sma * 1.2)
     high_52w = np.max(highs[-252:]) if len(highs) >= 252 else np.max(highs)
-    is_near_high = current_price >= (high_52w * 0.97)
+    is_near_high = current_price >= (high_52w * 0.95)
 
     recent_lows_idx = argrelextrema(lows[-60:], np.less, order=3)[0]
     recent_maxs_idx = argrelextrema(highs[-60:], np.greater, order=order)[0]
@@ -91,7 +71,7 @@ def identify_chart_pattern(df):
     price_40_bars_ago = closes[-40] if len(closes) >= 40 else closes[0]
     gain_pct = (current_price - price_40_bars_ago) / price_40_bars_ago
     recent_range = (np.max(highs[-10:]) - np.min(lows[-10:])) / current_price
-    if gain_pct >= 0.40 and recent_range <= 0.07:
+    if gain_pct >= 0.35 and recent_range <= 0.08:
         return "High Tight Flag", round(current_price * 1.02, 2), round(current_price * 1.08, 2), round(current_price * 0.95, 2)
 
     # 2. Inverse Head & Shoulders
@@ -99,28 +79,26 @@ def identify_chart_pattern(df):
         troughs = lows[-60:][recent_lows_idx]
         if len(troughs) >= 3:
             left_trough, head, right_trough = troughs[-3], troughs[-2], troughs[-1]
-            if head < left_trough and head < right_trough and abs(left_trough - right_trough) / left_trough < 0.04:
-                if current_price >= left_trough * 1.01:
-                    return "Inverse H&S", round(current_price * 1.005, 2), round(current_price * 1.07, 2), round(head * 0.97, 2)
+            if head < left_trough and head < right_trough:
+                return "Inverse H&S", round(current_price * 1.005, 2), round(current_price * 1.07, 2), round(head * 0.97, 2)
 
     # 3. Double Bottom
     if len(recent_lows_idx) >= 2:
         b1, b2 = lows[-60:][recent_lows_idx[-2]], lows[-60:][recent_lows_idx[-1]]
-        if abs(b1 - b2) / b1 < 0.03 and is_volume_surge:
+        if abs(b1 - b2) / b1 < 0.04:
             return "Double Bottom", round(current_price * 1.005, 2), round(current_price * 1.06, 2), round(min(b1, b2) * 0.97, 2)
 
     # 4. Ascending Triangle
     if len(recent_maxs_idx) >= 2 and len(recent_lows_idx) >= 2:
         recent_high_vals = highs[-60:][recent_maxs_idx]
         recent_low_vals = lows[-60:][recent_lows_idx]
-        flat_resistance = abs(recent_high_vals[-1] - recent_high_vals[-2]) / recent_high_vals[-1] < 0.02
-        rising_lows = recent_low_vals[-1] > recent_low_vals[-2]
-        if flat_resistance and rising_lows and is_volume_surge:
+        flat_resistance = abs(recent_high_vals[-1] - recent_high_vals[-2]) / recent_high_vals[-1] < 0.025
+        if flat_resistance:
             resistance_level = recent_high_vals[-1]
             return "Ascending Triangle", round(resistance_level * 1.002, 2), round(resistance_level * 1.07, 2), round(recent_low_vals[-1] * 0.97, 2)
 
     # 5. Rectangle Breakout
-    if is_near_high and is_volume_surge:
+    if is_near_high:
         return "Rectangle Breakout", round(current_price * 1.005, 2), round(current_price * 1.06, 2), round(current_price * 0.97, 2)
 
     if is_volume_surge:
@@ -130,9 +108,6 @@ def identify_chart_pattern(df):
 
 def fetch_and_scan_stock(ticker):
     try:
-        if not check_robust_fundamentals(ticker):
-            return None
-
         df = yf.download(ticker, period="3mo", interval="1d", progress=False, auto_adjust=True, session=session)
         if df.empty or len(df) < 40:
             return None
@@ -149,7 +124,7 @@ def fetch_and_scan_stock(ticker):
         chg = round(((price - prev_close) / prev_close) * 100, 2)
         
         vol_sma = df['Volume'].rolling(window=20).mean().iloc[-1]
-        is_vol = df['Volume'].iloc[-1] >= (vol_sma * 1.3)
+        is_vol = df['Volume'].iloc[-1] >= (vol_sma * 1.2)
 
         ohlc = []
         for idx, row in df.iloc[-50:].iterrows():
@@ -179,12 +154,12 @@ def fetch_and_scan_stock(ticker):
 
 @app.get("/")
 def home():
-    return {"status": "online", "message": "BreakoutDesk Fundamental + Pattern Screener is running!"}
+    return {"status": "online", "message": "BreakoutDesk Pattern Screener is running!"}
 
 @app.get("/api/scan-market")
 def scan_market():
     results = []
-    with ThreadPoolExecutor(max_workers=10) as executor:
+    with ThreadPoolExecutor(max_workers=12) as executor:
         futures = {executor.submit(fetch_and_scan_stock, ticker): ticker for ticker in WATCHLIST}
         for future in as_completed(futures):
             res = future.result()
