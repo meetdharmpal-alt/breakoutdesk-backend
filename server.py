@@ -53,7 +53,6 @@ WATCHLIST = [
     'ABB.NS', 'SIEMENS.NS', 'CGPOWER.NS', 'SOLARINDS.NS', 'KEI.NS', 'AIAENG.NS'
 ]
 
-# --- GLOBAL TERMINAL STATE & ALGO CONFIGURATION ---
 TRADING_CONFIG = {
     "paper_trading_enabled": True,
     "algo_trading_enabled": False,
@@ -68,7 +67,6 @@ TRADING_CONFIG = {
     "trade_logs": []
 }
 
-# --- FUNDAMENTAL QUALITY CHECK ENGINE ---
 def check_fundamentals(ticker_symbol, stock_obj=None):
     try:
         stock = stock_obj if stock_obj else yf.Ticker(ticker_symbol, session=session)
@@ -89,26 +87,21 @@ def check_fundamentals(ticker_symbol, stock_obj=None):
                 revs = financials.loc[rev_rows[0]].dropna().sort_index()
                 if len(revs) >= 4:
                     start_rev, end_rev = revs.iloc[-4], revs.iloc[-1]
-                    if start_rev > 0:
-                        sales_cagr = (end_rev / start_rev) ** (1 / 3) - 1
-                        if sales_cagr < 0.15:
-                            return False
+                    if start_rev > 0 and (end_rev / start_rev) ** (1 / 3) - 1 < 0.15:
+                        return False
 
             net_rows = [r for r in financials.index if 'Net Income' in str(r)]
             if net_rows:
                 profits = financials.loc[net_rows[0]].dropna().sort_index()
                 if len(profits) >= 4:
                     start_prof, end_prof = profits.iloc[-4], profits.iloc[-1]
-                    if start_prof > 0:
-                        profit_cagr = (end_prof / start_prof) ** (1 / 3) - 1
-                        if profit_cagr < 0.15:
-                            return False
+                    if start_prof > 0 and (end_prof / start_prof) ** (1 / 3) - 1 < 0.15:
+                        return False
 
         return True
     except Exception:
         return True
 
-# --- FUTURE STRATEGY ENGINE ---
 def evaluate_custom_strategy(df, strategy_name):
     closes = df['Close'].values
     highs = df['High'].values
@@ -131,12 +124,10 @@ def evaluate_custom_strategy(df, strategy_name):
 
     return True
 
-# --- NOTIFICATION HOOK (DEDUPLICATED) ---
 def send_entry_notification(ticker, pattern, entry_price, target, sl):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     msg = f"[ENTRY TRIGGERED] {ticker} | Pattern: {pattern} | Entry: Rs. {entry_price} | Target: Rs. {target} | SL: Rs. {sl}"
     
-    # Prevent duplicate notification logs for the same ticker
     recent_tickers = [log.get("ticker") for log in TRADING_CONFIG["trade_logs"][-15:]]
     if ticker in recent_tickers:
         return
@@ -151,9 +142,8 @@ def send_entry_notification(ticker, pattern, entry_price, target, sl):
             url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
             requests.post(url, json={"chat_id": chat_id, "text": msg}, timeout=5)
         except Exception as e:
-            print(f"Telegram notification dispatch error: {e}")
+            print(f"Telegram notification error: {e}")
 
-# --- AUTOMATED ALGO & PAPER EXECUTION MODULE ---
 def process_paper_and_algo_trade(ticker, pattern, entry_price, target, sl, current_price):
     if not TRADING_CONFIG["algo_trading_enabled"] or not TRADING_CONFIG["paper_trading_enabled"]:
         return
@@ -164,7 +154,6 @@ def process_paper_and_algo_trade(ticker, pattern, entry_price, target, sl, curre
 
     available_funds = TRADING_CONFIG["paper_funds"]
     allocation = available_funds * TRADING_CONFIG["position_size_pct"]
-    
     if allocation < entry_price:
         return
 
@@ -197,83 +186,118 @@ def process_paper_and_algo_trade(ticker, pattern, entry_price, target, sl, curre
         "type": "EXECUTION"
     })
 
+# --- PRECISION SPEC-BASED PATTERN SCANNING ENGINE ---
 def identify_chart_pattern(df):
     closes = df['Close'].values
     highs = df['High'].values
     lows = df['Low'].values
-    volumes = df['Volume'].values
     dates = [idx.strftime('%Y-%m-%d') if hasattr(idx, 'strftime') else str(idx)[:10] for idx in df.index]
     
     current_price = closes[-1]
-    vol_sma = np.mean(volumes[-20:])
-    is_volume_surge = volumes[-1] >= (vol_sma * 1.15)
-    high_52w = np.max(highs[-252:]) if len(highs) >= 252 else np.max(highs)
-    is_near_high = current_price >= (high_52w * 0.95)
-
     recent_lows_idx = argrelextrema(lows[-60:], np.less, order=2)[0]
     recent_maxs_idx = argrelextrema(highs[-60:], np.greater, order=2)[0]
     offset = len(df) - 60 if len(df) >= 60 else 0
 
-    # 1. High Tight Flag
-    price_40_bars_ago = closes[-40] if len(closes) >= 40 else closes[0]
-    gain_pct = (current_price - price_40_bars_ago) / price_40_bars_ago
-    recent_range = (np.max(highs[-10:]) - np.min(lows[-10:])) / current_price
-    if gain_pct >= 0.30 and recent_range <= 0.09:
-        trend_pts = [
-            {"time": dates[-10], "value": round(float(highs[-10]), 2)},
-            {"time": dates[-1], "value": round(float(lows[-1]), 2)}
-        ]
-        return "High Tight Flag", round(current_price * 1.02, 2), round(current_price * 1.08, 2), round(current_price * 0.95, 2), trend_pts
-
-    # 2. Inverse Head & Shoulders
-    if len(recent_lows_idx) >= 3:
-        i1, i2, i3 = recent_lows_idx[-3], recent_lows_idx[-2], recent_lows_idx[-1]
-        troughs = lows[-60:][[i1, i2, i3]]
+    # 1. Inverse Head & Shoulders
+    # Rule: Entry @ Neckline, SL @ Right Shoulder, Target = Neckline + Head-Depth
+    if len(recent_lows_idx) >= 3 and len(recent_maxs_idx) >= 2:
+        l1, l2, l3 = recent_lows_idx[-3], recent_lows_idx[-2], recent_lows_idx[-1]
+        troughs = lows[-60:][[l1, l2, l3]]
+        head_depth = troughs[0] - troughs[1] # Left Shoulder to Head depth
+        right_shoulder = troughs[2]
+        
         if troughs[1] < troughs[0] and troughs[1] < troughs[2]:
-            trend_pts = [
-                {"time": dates[offset + i1], "value": round(float(troughs[0]), 2)},
-                {"time": dates[offset + i2], "value": round(float(troughs[1]), 2)},
-                {"time": dates[offset + i3], "value": round(float(troughs[2]), 2)}
-            ]
-            return "Inverse H&S", round(current_price * 1.005, 2), round(current_price * 1.07, 2), round(troughs[1] * 0.97, 2), trend_pts
+            necklace_level = max(highs[-60:][recent_maxs_idx[-2:]])
+            entry = round(float(necklace_level), 2)
+            sl = round(float(right_shoulder * 0.99), 2)
+            target = round(float(entry + (entry - troughs[1])), 2)
 
-    # 3. Double Bottom
-    if len(recent_lows_idx) >= 2:
-        i1, i2 = recent_lows_idx[-2], recent_lows_idx[-1]
-        b1, b2 = lows[-60:][i1], lows[-60:][i2]
+            upper_trend = [{"time": dates[offset + l1], "value": entry}, {"time": dates[-1], "value": entry}]
+            lower_trend = [
+                {"time": dates[offset + l1], "value": round(float(troughs[0]), 2)},
+                {"time": dates[offset + l2], "value": round(float(troughs[1]), 2)},
+                {"time": dates[offset + l3], "value": round(float(troughs[2]), 2)}
+            ]
+            return "Inverse H&S", entry, target, sl, upper_trend, lower_trend
+
+    # 2. Double Bottom
+    # Rule: Entry @ Resistance Neckline, SL @ Lowest Trough, Target = Entry + Trough-Height
+    if len(recent_lows_idx) >= 2 and len(recent_maxs_idx) >= 1:
+        l1, l2 = recent_lows_idx[-2], recent_lows_idx[-1]
+        b1, b2 = lows[-60:][l1], lows[-60:][l2]
         if abs(b1 - b2) / b1 < 0.04:
-            trend_pts = [
-                {"time": dates[offset + i1], "value": round(float(b1), 2)},
-                {"time": dates[offset + i2], "value": round(float(b2), 2)}
-            ]
-            return "Double Bottom", round(current_price * 1.005, 2), round(current_price * 1.06, 2), round(min(b1, b2) * 0.97, 2), trend_pts
+            necklace_level = max(highs[-60:][l1:l2+1])
+            entry = round(float(necklace_level), 2)
+            lowest_trough = min(b1, b2)
+            sl = round(float(lowest_trough * 0.99), 2)
+            target = round(float(entry + (entry - lowest_trough)), 2)
 
-    # 4. Ascending Triangle
+            upper_trend = [{"time": dates[offset + l1], "value": entry}, {"time": dates[-1], "value": entry}]
+            lower_trend = [{"time": dates[offset + l1], "value": round(float(b1), 2)}, {"time": dates[offset + l2], "value": round(float(b2), 2)}]
+            return "Double Bottom", entry, target, sl, upper_trend, lower_trend
+
+    # 3. Cup and Handle
+    # Rule: Entry @ Rim Resistance, SL @ Lowest point of Handle, Target = Entry + Cup Depth
+    if len(recent_lows_idx) >= 2 and len(recent_maxs_idx) >= 2:
+        cup_bottom = np.min(lows[-40:-10])
+        rim_high = np.max(highs[-40:-10])
+        handle_low = np.min(lows[-10:])
+        
+        # Ensure handle retracement is shallow (< 50% of cup depth)
+        cup_depth = rim_high - cup_bottom
+        if handle_low > (rim_high - 0.5 * cup_depth):
+            entry = round(float(rim_high), 2)
+            sl = round(float(handle_low * 0.99), 2)
+            target = round(float(entry + cup_depth), 2)
+
+            upper_trend = [{"time": dates[-40], "value": entry}, {"time": dates[-1], "value": entry}]
+            lower_trend = [{"time": dates[-25], "value": round(float(cup_bottom), 2)}, {"time": dates[-5], "value": round(float(handle_low), 2)}]
+            return "Cup and Handle", entry, target, sl, upper_trend, lower_trend
+
+    # 4. Bull Flag / High Tight Flag
+    # Rule: Entry @ Parallel upper flag boundary close, SL @ Lowest point of flag, Target = Entry + Flagpole Height
+    price_30_bars_ago = closes[-30] if len(closes) >= 30 else closes[0]
+    flagpole_height = np.max(highs[-15:]) - price_30_bars_ago
+    recent_range = (np.max(highs[-10:]) - np.min(lows[-10:])) / current_price
+    if flagpole_height > 0 and recent_range <= 0.10:
+        flag_low = np.min(lows[-10:])
+        entry = round(float(np.max(highs[-10:])), 2)
+        sl = round(float(flag_low * 0.99), 2)
+        target = round(float(entry + flagpole_height), 2)
+
+        upper_trend = [{"time": dates[-10], "value": entry}, {"time": dates[-1], "value": entry}]
+        lower_trend = [{"time": dates[-10], "value": round(float(flag_low), 2)}, {"time": dates[-1], "value": round(float(flag_low), 2)}]
+        return "High Tight Flag", entry, target, sl, upper_trend, lower_trend
+
+    # 5. Ascending / Symmetrical Triangle
+    # Rule: Entry @ Flat Horizontal Barrier close, SL @ Recent minor swing low inside triangle, Target = Entry + Triangle Base Width
     if len(recent_maxs_idx) >= 2 and len(recent_lows_idx) >= 2:
         i_high1, i_high2 = recent_maxs_idx[-2], recent_maxs_idx[-1]
         recent_high_vals = highs[-60:][[i_high1, i_high2]]
         if abs(recent_high_vals[0] - recent_high_vals[1]) / recent_high_vals[0] < 0.03:
             resistance_level = recent_high_vals[1]
-            trend_pts = [
-                {"time": dates[offset + i_high1], "value": round(float(resistance_level), 2)},
-                {"time": dates[-1], "value": round(float(resistance_level), 2)}
-            ]
-            return "Ascending Triangle", round(resistance_level * 1.002, 2), round(resistance_level * 1.07, 2), round(lows[-60:][recent_lows_idx[-1]] * 0.97, 2), trend_pts
+            swing_low_inside = lows[-60:][recent_lows_idx[-1]]
+            base_width = resistance_level - lows[-60:][recent_lows_idx[-2]]
+            
+            entry = round(float(resistance_level), 2)
+            sl = round(float(swing_low_inside * 0.99), 2)
+            target = round(float(entry + base_width), 2)
 
-    # 5. Rectangle Breakout
-    if is_near_high:
-        trend_pts = [
-            {"time": dates[-30], "value": round(float(high_52w), 2)},
-            {"time": dates[-1], "value": round(float(high_52w), 2)}
-        ]
-        return "Rectangle Breakout", round(current_price * 1.005, 2), round(current_price * 1.06, 2), round(current_price * 0.97, 2), trend_pts
+            upper_trend = [{"time": dates[offset + i_high1], "value": entry}, {"time": dates[-1], "value": entry}]
+            lower_trend = [{"time": dates[offset + recent_lows_idx[-2]], "value": round(float(lows[-60:][recent_lows_idx[-2]]), 2)}, {"time": dates[-1], "value": round(float(swing_low_inside), 2)}]
+            return "Ascending Triangle", entry, target, sl, upper_trend, lower_trend
 
-    return "Consolidation", round(current_price * 1.01, 2), round(current_price * 1.04, 2), round(current_price * 0.97, 2), []
+    # Default Rectangle / Consolidation
+    entry = round(current_price * 1.005, 2)
+    sl = round(current_price * 0.97, 2)
+    target = round(current_price * 1.05, 2)
+    upper_trend = [{"time": dates[-20], "value": round(float(np.max(highs[-20:])), 2)}, {"time": dates[-1], "value": round(float(np.max(highs[-20:])), 2)}]
+    lower_trend = [{"time": dates[-20], "value": round(float(np.min(lows[-20:])), 2)}, {"time": dates[-1], "value": round(float(np.min(lows[-20:])), 2)}]
+    return "Rectangle Breakout", entry, target, sl, upper_trend, lower_trend
 
 def fetch_and_scan_stock(ticker):
     try:
         t = yf.Ticker(ticker, session=session)
-        
         if not check_fundamentals(ticker, stock_obj=t):
             return None
 
@@ -281,19 +305,21 @@ def fetch_and_scan_stock(ticker):
         if df is None or df.empty or len(df) < 30:
             return None
             
+        vol_sma = df['Volume'].rolling(window=20).mean().iloc[-1]
+        current_vol = df['Volume'].iloc[-1]
+        if current_vol < (vol_sma * 1.15):
+            return None # Require > 1x volume surge
+
         if not evaluate_custom_strategy(df, TRADING_CONFIG["selected_strategy"]):
             return None
 
-        pattern, entry, target, sl, trend_pts = identify_chart_pattern(df)
+        pattern, entry, target, sl, upper_trend, lower_trend = identify_chart_pattern(df)
         
         last_row = df.iloc[-1]
         prev_row = df.iloc[-2]
         price = float(last_row['Close'])
         prev_close = float(prev_row['Close'])
         chg = round(((price - prev_close) / prev_close) * 100, 2)
-        
-        vol_sma = df['Volume'].rolling(window=20).mean().iloc[-1]
-        is_vol = df['Volume'].iloc[-1] >= (vol_sma * 1.15)
 
         if price >= entry:
             send_entry_notification(ticker, pattern, entry, target, sl)
@@ -319,9 +345,10 @@ def fetch_and_scan_stock(ticker):
             "entry": entry,
             "target": target,
             "sl": sl,
-            "volume": "2.1x ⚡" if is_vol else "1.0x",
+            "volume": f"{round(current_vol/vol_sma, 1)}x ⚡",
             "ohlc": ohlc,
-            "trend_pts": trend_pts
+            "upper_trend": upper_trend,
+            "lower_trend": lower_trend
         }
     except Exception:
         return None
