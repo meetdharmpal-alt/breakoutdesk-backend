@@ -12,6 +12,8 @@ import os
 import uvicorn
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
+import threading
+import time
 
 app = FastAPI(title="BreakoutDesk Pattern Screener & Algo Terminal")
 
@@ -64,6 +66,7 @@ TRADING_CONFIG = {
     "telegram_chat_id": "",
     "notification_email": "",
     "active_positions": [],
+    "trade_journal": [],
     "trade_logs": []
 }
 
@@ -71,7 +74,6 @@ def check_fundamentals(ticker_symbol, stock_obj=None):
     try:
         stock = stock_obj if stock_obj else yf.Ticker(ticker_symbol, session=session)
         info = stock.info or {}
-        
         roe = info.get('returnOnEquity')
         roce = info.get('returnOnCapitalEmployed')
         
@@ -97,7 +99,6 @@ def check_fundamentals(ticker_symbol, stock_obj=None):
                     start_prof, end_prof = profits.iloc[-4], profits.iloc[-1]
                     if start_prof > 0 and (end_prof / start_prof) ** (1 / 3) - 1 < 0.15:
                         return False
-
         return True
     except Exception:
         return True
@@ -112,79 +113,14 @@ def evaluate_custom_strategy(df, strategy_name):
         vol = df['Volume'].values
         vwap = np.sum(tp[-20:] * vol[-20:]) / np.sum(vol[-20:])
         return closes[-1] > vwap
-        
     elif strategy_name == "EMA Crossover":
         ema20 = df['Close'].ewm(span=20, adjust=False).mean().iloc[-1]
         ema50 = df['Close'].ewm(span=50, adjust=False).mean().iloc[-1]
         return ema20 > ema50
-
     elif strategy_name == "Open High Low Reversal":
         open_p, low_p, close_p = df['Open'].iloc[-1], df['Low'].iloc[-1], df['Close'].iloc[-1]
         return (open_p == low_p) and (close_p > open_p)
-
     return True
-
-def send_entry_notification(ticker, pattern, entry_price, target, sl):
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    msg = f"[ENTRY TRIGGERED] {ticker} | Pattern: {pattern} | Entry: Rs. {entry_price} | Target: Rs. {target} | SL: Rs. {sl}"
-    
-    recent_tickers = [log.get("ticker") for log in TRADING_CONFIG["trade_logs"][-15:]]
-    if ticker in recent_tickers:
-        return
-
-    TRADING_CONFIG["trade_logs"].append({"timestamp": timestamp, "message": msg, "ticker": ticker, "type": "NOTIFICATION"})
-    print(msg)
-
-    bot_token = TRADING_CONFIG.get("telegram_bot_token")
-    chat_id = TRADING_CONFIG.get("telegram_chat_id")
-    if bot_token and chat_id:
-        try:
-            url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-            requests.post(url, json={"chat_id": chat_id, "text": msg}, timeout=5)
-        except Exception as e:
-            print(f"Telegram notification error: {e}")
-
-def process_paper_and_algo_trade(ticker, pattern, entry_price, target, sl, current_price):
-    if not TRADING_CONFIG["algo_trading_enabled"] or not TRADING_CONFIG["paper_trading_enabled"]:
-        return
-
-    existing = [p for p in TRADING_CONFIG["active_positions"] if p["ticker"] == ticker]
-    if existing:
-        return
-
-    available_funds = TRADING_CONFIG["paper_funds"]
-    allocation = available_funds * TRADING_CONFIG["position_size_pct"]
-    if allocation < entry_price:
-        return
-
-    quantity = int(allocation // entry_price)
-    if quantity <= 0:
-        return
-
-    invested_amount = quantity * entry_price
-    TRADING_CONFIG["paper_funds"] -= invested_amount
-
-    new_position = {
-        "ticker": ticker,
-        "pattern": pattern,
-        "entry_price": entry_price,
-        "current_price": current_price,
-        "target": target,
-        "sl": sl,
-        "quantity": quantity,
-        "invested": round(invested_amount, 2),
-        "entry_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    }
-
-    TRADING_CONFIG["active_positions"].append(new_position)
-    
-    log_msg = f"[ALGO PAPER BUY] Executed {quantity} shares of {ticker} at Rs. {entry_price} (Invested: Rs. {round(invested_amount, 2)})"
-    TRADING_CONFIG["trade_logs"].append({
-        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "message": log_msg,
-        "ticker": ticker,
-        "type": "EXECUTION"
-    })
 
 def identify_chart_pattern(df):
     closes = df['Close'].values
@@ -202,19 +138,13 @@ def identify_chart_pattern(df):
         l1, l2, l3 = recent_lows_idx[-3], recent_lows_idx[-2], recent_lows_idx[-1]
         troughs = lows[-60:][[l1, l2, l3]]
         right_shoulder = troughs[2]
-        
         if troughs[1] < troughs[0] and troughs[1] < troughs[2]:
             necklace_level = max(highs[-60:][recent_maxs_idx[-2:]])
             entry = round(float(necklace_level), 2)
             sl = round(float(right_shoulder * 0.99), 2)
             target = round(float(entry + (entry - troughs[1])), 2)
-
             upper_trend = [{"time": dates[offset + l1], "value": entry}, {"time": dates[-1], "value": entry}]
-            lower_trend = [
-                {"time": dates[offset + l1], "value": round(float(troughs[0]), 2)},
-                {"time": dates[offset + l2], "value": round(float(troughs[1]), 2)},
-                {"time": dates[offset + l3], "value": round(float(troughs[2]), 2)}
-            ]
+            lower_trend = [{"time": dates[offset + l1], "value": round(float(troughs[0]), 2)}, {"time": dates[offset + l2], "value": round(float(troughs[1]), 2)}, {"time": dates[offset + l3], "value": round(float(troughs[2]), 2)}]
             return "Inverse H&S", entry, target, sl, upper_trend, lower_trend
 
     # 2. Double Bottom
@@ -227,7 +157,6 @@ def identify_chart_pattern(df):
             lowest_trough = min(b1, b2)
             sl = round(float(lowest_trough * 0.99), 2)
             target = round(float(entry + (entry - lowest_trough)), 2)
-
             upper_trend = [{"time": dates[offset + l1], "value": entry}, {"time": dates[-1], "value": entry}]
             lower_trend = [{"time": dates[offset + l1], "value": round(float(b1), 2)}, {"time": dates[offset + l2], "value": round(float(b2), 2)}]
             return "Double Bottom", entry, target, sl, upper_trend, lower_trend
@@ -242,7 +171,6 @@ def identify_chart_pattern(df):
             entry = round(float(rim_high), 2)
             sl = round(float(handle_low * 0.99), 2)
             target = round(float(entry + cup_depth), 2)
-
             upper_trend = [{"time": dates[-40], "value": entry}, {"time": dates[-1], "value": entry}]
             lower_trend = [{"time": dates[-25], "value": round(float(cup_bottom), 2)}, {"time": dates[-5], "value": round(float(handle_low), 2)}]
             return "Cup and Handle", entry, target, sl, upper_trend, lower_trend
@@ -256,7 +184,6 @@ def identify_chart_pattern(df):
         entry = round(float(np.max(highs[-10:])), 2)
         sl = round(float(flag_low * 0.99), 2)
         target = round(float(entry + flagpole_height), 2)
-
         upper_trend = [{"time": dates[-10], "value": entry}, {"time": dates[-1], "value": entry}]
         lower_trend = [{"time": dates[-10], "value": round(float(flag_low), 2)}, {"time": dates[-1], "value": round(float(flag_low), 2)}]
         return "High Tight Flag", entry, target, sl, upper_trend, lower_trend
@@ -269,22 +196,127 @@ def identify_chart_pattern(df):
             resistance_level = recent_high_vals[1]
             swing_low_inside = lows[-60:][recent_lows_idx[-1]]
             base_width = resistance_level - lows[-60:][recent_lows_idx[-2]]
-            
             entry = round(float(resistance_level), 2)
             sl = round(float(swing_low_inside * 0.99), 2)
             target = round(float(entry + base_width), 2)
-
             upper_trend = [{"time": dates[offset + i_high1], "value": entry}, {"time": dates[-1], "value": entry}]
             lower_trend = [{"time": dates[offset + recent_lows_idx[-2]], "value": round(float(lows[-60:][recent_lows_idx[-2]]), 2)}, {"time": dates[-1], "value": round(float(swing_low_inside), 2)}]
             return "Ascending Triangle", entry, target, sl, upper_trend, lower_trend
 
-    # Default Rectangle / Consolidation
     entry = round(current_price * 1.005, 2)
     sl = round(current_price * 0.98, 2)
-    target = round(entry + 2.1 * (entry - sl), 2) # Ensure R:R >= 1:2
+    target = round(entry + 2.1 * (entry - sl), 2)
     upper_trend = [{"time": dates[-20], "value": round(float(np.max(highs[-20:])), 2)}, {"time": dates[-1], "value": round(float(np.max(highs[-20:])), 2)}]
     lower_trend = [{"time": dates[-20], "value": round(float(np.min(lows[-20:])), 2)}, {"time": dates[-1], "value": round(float(np.min(lows[-20:])), 2)}]
     return "Rectangle Breakout", entry, target, sl, upper_trend, lower_trend
+
+def execute_algo_buy(ticker, pattern, entry, target, sl, current_price):
+    existing = [p for p in TRADING_CONFIG["active_positions"] if p["ticker"] == ticker]
+    if existing:
+        return
+
+    available_funds = TRADING_CONFIG["paper_funds"]
+    allocation = available_funds * TRADING_CONFIG["position_size_pct"]
+    if allocation < entry:
+        return
+
+    quantity = int(allocation // entry)
+    if quantity <= 0:
+        return
+
+    invested_amount = quantity * entry
+    TRADING_CONFIG["paper_funds"] -= invested_amount
+
+    new_position = {
+        "ticker": ticker,
+        "pattern": pattern,
+        "entry_price": entry,
+        "current_price": current_price,
+        "target": target,
+        "sl": sl,
+        "quantity": quantity,
+        "invested": round(invested_amount, 2),
+        "entry_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    }
+
+    TRADING_CONFIG["active_positions"].append(new_position)
+    msg = f"[ALGO LIVE EXECUTION] BUY {quantity} shares of {ticker} @ Entry Rs. {entry} | Target: Rs. {target} | SL: Rs. {sl}"
+    TRADING_CONFIG["trade_logs"].append({"timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "message": msg, "ticker": ticker, "type": "EXECUTION"})
+    print(msg)
+
+def monitor_and_manage_positions():
+    """Background worker that continuously monitors active positions against live market LTP and manages exits (Target or Stop-Loss)."""
+    while True:
+        try:
+            if TRADING_CONFIG["algo_trading_enabled"] and TRADING_CONFIG["active_positions"]:
+                for pos in list(TRADING_CONFIG["active_positions"]):
+                    t = yf.Ticker(pos["ticker"], session=session)
+                    todays_data = t.history(period="1d")
+                    if todays_data is not None and not todays_data.empty:
+                        ltp = float(todays_data['Close'].iloc[-1])
+                        pos["current_price"] = ltp
+
+                        # Check Target Hit
+                        if ltp >= pos["target"]:
+                            exit_val = pos["quantity"] * pos["target"]
+                            pnl = exit_val - pos["invested"]
+                            pnl_pct = round((pnl / pos["invested"]) * 100, 2)
+                            TRADING_CONFIG["paper_funds"] += exit_val
+
+                            journal_entry = {
+                                "ticker": pos["ticker"],
+                                "pattern": pos["pattern"],
+                                "entry_price": pos["entry_price"],
+                                "exit_price": pos["target"],
+                                "quantity": pos["quantity"],
+                                "invested": pos["invested"],
+                                "exit_value": round(exit_val, 2),
+                                "pnl": round(pnl, 2),
+                                "pnl_pct": pnl_pct,
+                                "exit_reason": "TARGET HIT 🎯",
+                                "entry_time": pos["entry_time"],
+                                "exit_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            }
+                            TRADING_CONFIG["trade_journal"].insert(0, journal_entry)
+                            TRADING_CONFIG["active_positions"].remove(pos)
+                            
+                            log_msg = f"[ALGO EXIT] TARGET HIT for {pos['ticker']} @ Rs. {pos['target']} | Net PnL: Rs. {round(pnl, 2)} ({pnl_pct}%)"
+                            TRADING_CONFIG["trade_logs"].append({"timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "message": log_msg, "ticker": pos["ticker"], "type": "EXIT"})
+                            print(log_msg)
+
+                        # Check Stop Loss Hit
+                        elif ltp <= pos["sl"]:
+                            exit_val = pos["quantity"] * pos["sl"]
+                            pnl = exit_val - pos["invested"]
+                            pnl_pct = round((pnl / pos["invested"]) * 100, 2)
+                            TRADING_CONFIG["paper_funds"] += exit_val
+
+                            journal_entry = {
+                                "ticker": pos["ticker"],
+                                "pattern": pos["pattern"],
+                                "entry_price": pos["entry_price"],
+                                "exit_price": pos["sl"],
+                                "quantity": pos["quantity"],
+                                "invested": pos["invested"],
+                                "exit_value": round(exit_val, 2),
+                                "pnl": round(pnl, 2),
+                                "pnl_pct": pnl_pct,
+                                "exit_reason": "STOP LOSS HIT 🛑",
+                                "entry_time": pos["entry_time"],
+                                "exit_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            }
+                            TRADING_CONFIG["trade_journal"].insert(0, journal_entry)
+                            TRADING_CONFIG["active_positions"].remove(pos)
+
+                            log_msg = f"[ALGO EXIT] STOP LOSS HIT for {pos['ticker']} @ Rs. {pos['sl']} | Net PnL: Rs. {round(pnl, 2)} ({pnl_pct}%)"
+                            TRADING_CONFIG["trade_logs"].append({"timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "message": log_msg, "ticker": pos["ticker"], "type": "EXIT"})
+                            print(log_msg)
+        except Exception as e:
+            print(f"Background position monitor error: {e}")
+        time.sleep(30)
+
+# Start background monitoring thread
+threading.Thread(target=monitor_and_manage_positions, daemon=True).start()
 
 def fetch_and_scan_stock(ticker):
     try:
@@ -296,22 +328,20 @@ def fetch_and_scan_stock(ticker):
         if df is None or df.empty or len(df) < 30:
             return None
             
-        # 1. STRICT VOLUME SURGE CHECK (> 1.49x 20-period SMA)
         vol_sma = df['Volume'].rolling(window=20).mean().iloc[-1]
         current_vol = df['Volume'].iloc[-1]
         if current_vol <= (vol_sma * 1.49):
-            return None # Skip stocks without >1.49x volume surge
+            return None
 
         if not evaluate_custom_strategy(df, TRADING_CONFIG["selected_strategy"]):
             return None
 
         pattern, entry, target, sl, upper_trend, lower_trend = identify_chart_pattern(df)
         
-        # 2. STRICT RISK-TO-REWARD (R:R >= 1:2) FILTER
         risk = entry - sl
         reward = target - entry
         if risk <= 0 or (reward / risk) < 2.0:
-            return None # Filter out stocks where R:R is less than 1:2
+            return None
 
         last_row = df.iloc[-1]
         prev_row = df.iloc[-2]
@@ -319,9 +349,9 @@ def fetch_and_scan_stock(ticker):
         prev_close = float(prev_row['Close'])
         chg = round(((price - prev_close) / prev_close) * 100, 2)
 
-        if price >= entry:
-            send_entry_notification(ticker, pattern, entry, target, sl)
-            process_paper_and_algo_trade(ticker, pattern, entry, target, sl, price)
+        # Automatic live execution if price meets/exceeds entry and Algo trading is ON
+        if price >= entry and TRADING_CONFIG["algo_trading_enabled"]:
+            execute_algo_buy(ticker, pattern, entry, target, sl, price)
 
         ohlc = []
         for idx, row in df.iloc[-50:].iterrows():
@@ -335,7 +365,6 @@ def fetch_and_scan_stock(ticker):
             })
 
         rr_ratio = round(reward / risk, 2)
-
         return {
             "ticker": ticker,
             "name": ticker.replace(".NS", ""),
@@ -392,6 +421,7 @@ def get_algo_dashboard():
         "unrealized_pnl": round(unrealized_pnl, 2),
         "active_positions_count": len(active_positions),
         "active_positions": active_positions,
+        "trade_journal": TRADING_CONFIG["trade_journal"],
         "trade_logs": TRADING_CONFIG["trade_logs"][-50:]
     }
 
