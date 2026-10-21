@@ -77,28 +77,10 @@ def check_fundamentals(ticker_symbol, stock_obj=None):
         roe = info.get('returnOnEquity')
         roce = info.get('returnOnCapitalEmployed')
         
-        if roe is not None and roe < 0.15:
+        if roe is not None and roe < 0.12:
             return False
-        if roce is not None and roce < 0.15:
+        if roce is not None and roce < 0.12:
             return False
-
-        financials = stock.financials
-        if financials is not None and not financials.empty:
-            rev_rows = [r for r in financials.index if 'Total Revenue' in str(r) or 'Revenue' in str(r)]
-            if rev_rows:
-                revs = financials.loc[rev_rows[0]].dropna().sort_index()
-                if len(revs) >= 4:
-                    start_rev, end_rev = revs.iloc[-4], revs.iloc[-1]
-                    if start_rev > 0 and (end_rev / start_rev) ** (1 / 3) - 1 < 0.15:
-                        return False
-
-            net_rows = [r for r in financials.index if 'Net Income' in str(r)]
-            if net_rows:
-                profits = financials.loc[net_rows[0]].dropna().sort_index()
-                if len(profits) >= 4:
-                    start_prof, end_prof = profits.iloc[-4], profits.iloc[-1]
-                    if start_prof > 0 and (end_prof / start_prof) ** (1 / 3) - 1 < 0.15:
-                        return False
         return True
     except Exception:
         return True
@@ -126,22 +108,22 @@ def identify_chart_pattern(df):
     closes = df['Close'].values
     highs = df['High'].values
     lows = df['Low'].values
-    dates = [idx.strftime('%Y-%m-%d') if hasattr(idx, 'strftime') else str(idx)[:10] for idx in df.index]
+    dates = [idx.strftime('%Y-%m-%d %H:%M') if hasattr(idx, 'strftime') else str(idx)[:16] for idx in df.index]
     
     current_price = closes[-1]
-    recent_lows_idx = argrelextrema(lows[-60:], np.less, order=2)[0]
-    recent_maxs_idx = argrelextrema(highs[-60:], np.greater, order=2)[0]
-    offset = len(df) - 60 if len(df) >= 60 else 0
+    recent_lows_idx = argrelextrema(lows[-40:], np.less, order=2)[0]
+    recent_maxs_idx = argrelextrema(highs[-40:], np.greater, order=2)[0]
+    offset = len(df) - 40 if len(df) >= 40 else 0
 
     # 1. Inverse Head & Shoulders
     if len(recent_lows_idx) >= 3 and len(recent_maxs_idx) >= 2:
         l1, l2, l3 = recent_lows_idx[-3], recent_lows_idx[-2], recent_lows_idx[-1]
-        troughs = lows[-60:][[l1, l2, l3]]
+        troughs = lows[-40:][[l1, l2, l3]]
         right_shoulder = troughs[2]
         if troughs[1] < troughs[0] and troughs[1] < troughs[2]:
-            necklace_level = max(highs[-60:][recent_maxs_idx[-2:]])
+            necklace_level = max(highs[-40:][recent_maxs_idx[-2:]])
             entry = round(float(necklace_level), 2)
-            sl = round(float(right_shoulder * 0.99), 2)
+            sl = round(float(right_shoulder * 0.995), 2)
             target = round(float(entry + (entry - troughs[1])), 2)
             upper_trend = [{"time": dates[offset + l1], "value": entry}, {"time": dates[-1], "value": entry}]
             lower_trend = [{"time": dates[offset + l1], "value": round(float(troughs[0]), 2)}, {"time": dates[offset + l2], "value": round(float(troughs[1]), 2)}, {"time": dates[offset + l3], "value": round(float(troughs[2]), 2)}]
@@ -150,12 +132,12 @@ def identify_chart_pattern(df):
     # 2. Double Bottom
     if len(recent_lows_idx) >= 2 and len(recent_maxs_idx) >= 1:
         l1, l2 = recent_lows_idx[-2], recent_lows_idx[-1]
-        b1, b2 = lows[-60:][l1], lows[-60:][l2]
-        if abs(b1 - b2) / b1 < 0.04:
-            necklace_level = max(highs[-60:][l1:l2+1])
+        b1, b2 = lows[-40:][l1], lows[-40:][l2]
+        if abs(b1 - b2) / b1 < 0.03:
+            necklace_level = max(highs[-40:][l1:l2+1])
             entry = round(float(necklace_level), 2)
             lowest_trough = min(b1, b2)
-            sl = round(float(lowest_trough * 0.99), 2)
+            sl = round(float(lowest_trough * 0.995), 2)
             target = round(float(entry + (entry - lowest_trough)), 2)
             upper_trend = [{"time": dates[offset + l1], "value": entry}, {"time": dates[-1], "value": entry}]
             lower_trend = [{"time": dates[offset + l1], "value": round(float(b1), 2)}, {"time": dates[offset + l2], "value": round(float(b2), 2)}]
@@ -163,51 +145,51 @@ def identify_chart_pattern(df):
 
     # 3. Cup and Handle
     if len(recent_lows_idx) >= 2 and len(recent_maxs_idx) >= 2:
-        cup_bottom = np.min(lows[-40:-10])
-        rim_high = np.max(highs[-40:-10])
-        handle_low = np.min(lows[-10:])
+        cup_bottom = np.min(lows[-30:-8])
+        rim_high = np.max(highs[-30:-8])
+        handle_low = np.min(lows[-8:])
         cup_depth = rim_high - cup_bottom
         if handle_low > (rim_high - 0.5 * cup_depth):
             entry = round(float(rim_high), 2)
-            sl = round(float(handle_low * 0.99), 2)
+            sl = round(float(handle_low * 0.995), 2)
             target = round(float(entry + cup_depth), 2)
-            upper_trend = [{"time": dates[-40], "value": entry}, {"time": dates[-1], "value": entry}]
-            lower_trend = [{"time": dates[-25], "value": round(float(cup_bottom), 2)}, {"time": dates[-5], "value": round(float(handle_low), 2)}]
+            upper_trend = [{"time": dates[-30], "value": entry}, {"time": dates[-1], "value": entry}]
+            lower_trend = [{"time": dates[-20], "value": round(float(cup_bottom), 2)}, {"time": dates[-4], "value": round(float(handle_low), 2)}]
             return "Cup and Handle", entry, target, sl, upper_trend, lower_trend
 
-    # 4. Bull Flag / High Tight Flag
-    price_30_bars_ago = closes[-30] if len(closes) >= 30 else closes[0]
-    flagpole_height = np.max(highs[-15:]) - price_30_bars_ago
-    recent_range = (np.max(highs[-10:]) - np.min(lows[-10:])) / current_price
-    if flagpole_height > 0 and recent_range <= 0.10:
-        flag_low = np.min(lows[-10:])
-        entry = round(float(np.max(highs[-10:])), 2)
-        sl = round(float(flag_low * 0.99), 2)
+    # 4. High Tight Flag
+    price_20_bars_ago = closes[-20] if len(closes) >= 20 else closes[0]
+    flagpole_height = np.max(highs[-10:]) - price_20_bars_ago
+    recent_range = (np.max(highs[-6:]) - np.min(lows[-6:])) / current_price
+    if flagpole_height > 0 and recent_range <= 0.06:
+        flag_low = np.min(lows[-6:])
+        entry = round(float(np.max(highs[-6:])), 2)
+        sl = round(float(flag_low * 0.995), 2)
         target = round(float(entry + flagpole_height), 2)
-        upper_trend = [{"time": dates[-10], "value": entry}, {"time": dates[-1], "value": entry}]
-        lower_trend = [{"time": dates[-10], "value": round(float(flag_low), 2)}, {"time": dates[-1], "value": round(float(flag_low), 2)}]
+        upper_trend = [{"time": dates[-6], "value": entry}, {"time": dates[-1], "value": entry}]
+        lower_trend = [{"time": dates[-6], "value": round(float(flag_low), 2)}, {"time": dates[-1], "value": round(float(flag_low), 2)}]
         return "High Tight Flag", entry, target, sl, upper_trend, lower_trend
 
-    # 5. Ascending / Symmetrical Triangle
+    # 5. Ascending Triangle
     if len(recent_maxs_idx) >= 2 and len(recent_lows_idx) >= 2:
         i_high1, i_high2 = recent_maxs_idx[-2], recent_maxs_idx[-1]
-        recent_high_vals = highs[-60:][[i_high1, i_high2]]
-        if abs(recent_high_vals[0] - recent_high_vals[1]) / recent_high_vals[0] < 0.03:
+        recent_high_vals = highs[-40:][[i_high1, i_high2]]
+        if abs(recent_high_vals[0] - recent_high_vals[1]) / recent_high_vals[0] < 0.02:
             resistance_level = recent_high_vals[1]
-            swing_low_inside = lows[-60:][recent_lows_idx[-1]]
-            base_width = resistance_level - lows[-60:][recent_lows_idx[-2]]
+            swing_low_inside = lows[-40:][recent_lows_idx[-1]]
+            base_width = resistance_level - lows[-40:][recent_lows_idx[-2]]
             entry = round(float(resistance_level), 2)
-            sl = round(float(swing_low_inside * 0.99), 2)
+            sl = round(float(swing_low_inside * 0.995), 2)
             target = round(float(entry + base_width), 2)
             upper_trend = [{"time": dates[offset + i_high1], "value": entry}, {"time": dates[-1], "value": entry}]
-            lower_trend = [{"time": dates[offset + recent_lows_idx[-2]], "value": round(float(lows[-60:][recent_lows_idx[-2]]), 2)}, {"time": dates[-1], "value": round(float(swing_low_inside), 2)}]
+            lower_trend = [{"time": dates[offset + recent_lows_idx[-2]], "value": round(float(lows[-40:][recent_lows_idx[-2]]), 2)}, {"time": dates[-1], "value": round(float(swing_low_inside), 2)}]
             return "Ascending Triangle", entry, target, sl, upper_trend, lower_trend
 
-    entry = round(current_price * 1.005, 2)
-    sl = round(current_price * 0.98, 2)
+    entry = round(current_price * 1.002, 2)
+    sl = round(current_price * 0.99, 2)
     target = round(entry + 2.1 * (entry - sl), 2)
-    upper_trend = [{"time": dates[-20], "value": round(float(np.max(highs[-20:])), 2)}, {"time": dates[-1], "value": round(float(np.max(highs[-20:])), 2)}]
-    lower_trend = [{"time": dates[-20], "value": round(float(np.min(lows[-20:])), 2)}, {"time": dates[-1], "value": round(float(np.min(lows[-20:])), 2)}]
+    upper_trend = [{"time": dates[-15], "value": round(float(np.max(highs[-15:])), 2)}, {"time": dates[-1], "value": round(float(np.max(highs[-15:])), 2)}]
+    lower_trend = [{"time": dates[-15], "value": round(float(np.min(lows[-15:])), 2)}, {"time": dates[-1], "value": round(float(np.min(lows[-15:])), 2)}]
     return "Rectangle Breakout", entry, target, sl, upper_trend, lower_trend
 
 def execute_algo_buy(ticker, pattern, entry, target, sl, current_price):
@@ -245,7 +227,6 @@ def execute_algo_buy(ticker, pattern, entry, target, sl, current_price):
     print(msg)
 
 def monitor_and_manage_positions():
-    """Background worker that continuously monitors active positions against live market LTP and manages exits (Target or Stop-Loss)."""
     while True:
         try:
             if TRADING_CONFIG["algo_trading_enabled"] and TRADING_CONFIG["active_positions"]:
@@ -256,7 +237,6 @@ def monitor_and_manage_positions():
                         ltp = float(todays_data['Close'].iloc[-1])
                         pos["current_price"] = ltp
 
-                        # Check Target Hit
                         if ltp >= pos["target"]:
                             exit_val = pos["quantity"] * pos["target"]
                             pnl = exit_val - pos["invested"]
@@ -282,9 +262,7 @@ def monitor_and_manage_positions():
                             
                             log_msg = f"[ALGO EXIT] TARGET HIT for {pos['ticker']} @ Rs. {pos['target']} | Net PnL: Rs. {round(pnl, 2)} ({pnl_pct}%)"
                             TRADING_CONFIG["trade_logs"].append({"timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "message": log_msg, "ticker": pos["ticker"], "type": "EXIT"})
-                            print(log_msg)
 
-                        # Check Stop Loss Hit
                         elif ltp <= pos["sl"]:
                             exit_val = pos["quantity"] * pos["sl"]
                             pnl = exit_val - pos["invested"]
@@ -310,21 +288,20 @@ def monitor_and_manage_positions():
 
                             log_msg = f"[ALGO EXIT] STOP LOSS HIT for {pos['ticker']} @ Rs. {pos['sl']} | Net PnL: Rs. {round(pnl, 2)} ({pnl_pct}%)"
                             TRADING_CONFIG["trade_logs"].append({"timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "message": log_msg, "ticker": pos["ticker"], "type": "EXIT"})
-                            print(log_msg)
         except Exception as e:
-            print(f"Background position monitor error: {e}")
+            print(f"Background monitor error: {e}")
         time.sleep(30)
 
-# Start background monitoring thread
 threading.Thread(target=monitor_and_manage_positions, daemon=True).start()
 
+# --- SWING SCANNER (Daily timeframe) ---
 def fetch_and_scan_stock(ticker):
     try:
         t = yf.Ticker(ticker, session=session)
         if not check_fundamentals(ticker, stock_obj=t):
             return None
 
-        df = t.history(period="3mo", auto_adjust=True)
+        df = t.history(period="3mo", interval="1d", auto_adjust=True)
         if df is None or df.empty or len(df) < 30:
             return None
             
@@ -349,13 +326,68 @@ def fetch_and_scan_stock(ticker):
         prev_close = float(prev_row['Close'])
         chg = round(((price - prev_close) / prev_close) * 100, 2)
 
-        # Automatic live execution if price meets/exceeds entry and Algo trading is ON
         if price >= entry and TRADING_CONFIG["algo_trading_enabled"]:
             execute_algo_buy(ticker, pattern, entry, target, sl, price)
 
         ohlc = []
         for idx, row in df.iloc[-50:].iterrows():
             date_str = idx.strftime('%Y-%m-%d') if hasattr(idx, 'strftime') else str(idx)[:10]
+            ohlc.append({
+                "time": date_str,
+                "open": round(float(row['Open']), 2),
+                "high": round(float(row['High']), 2),
+                "low": round(float(row['Low']), 2),
+                "close": round(float(row['Close']), 2)
+            })
+
+        rr_ratio = round(reward / risk, 2)
+        return {
+            "ticker": ticker,
+            "name": ticker.replace(".NS", ""),
+            "price": round(price, 2),
+            "chg": chg,
+            "pattern": pattern,
+            "entry": entry,
+            "target": target,
+            "sl": sl,
+            "rr_ratio": f"1:{rr_ratio}",
+            "volume": f"{round(current_vol/vol_sma, 2)}x ⚡",
+            "ohlc": ohlc,
+            "upper_trend": upper_trend,
+            "lower_trend": lower_trend
+        }
+    except Exception:
+        return None
+
+# --- INTRADAY SCANNER (15-Minute timeframe) ---
+def fetch_and_scan_intraday(ticker):
+    try:
+        t = yf.Ticker(ticker, session=session)
+        df = t.history(period="5d", interval="15m", auto_adjust=True)
+        if df is None or df.empty or len(df) < 30:
+            return None
+            
+        vol_sma = df['Volume'].rolling(window=20).mean().iloc[-1]
+        current_vol = df['Volume'].iloc[-1]
+        if current_vol <= (vol_sma * 1.30):
+            return None
+
+        pattern, entry, target, sl, upper_trend, lower_trend = identify_chart_pattern(df)
+        
+        risk = entry - sl
+        reward = target - entry
+        if risk <= 0 or (reward / risk) < 2.0:
+            return None
+
+        last_row = df.iloc[-1]
+        prev_row = df.iloc[-2]
+        price = float(last_row['Close'])
+        prev_close = float(prev_row['Close'])
+        chg = round(((price - prev_close) / prev_close) * 100, 2)
+
+        ohlc = []
+        for idx, row in df.iloc[-60:].iterrows():
+            date_str = idx.strftime('%Y-%m-%d %H:%M') if hasattr(idx, 'strftime') else str(idx)[:16]
             ohlc.append({
                 "time": date_str,
                 "open": round(float(row['Open']), 2),
@@ -434,7 +466,17 @@ def scan_market():
             res = future.result()
             if res:
                 results.append(res)
+    return {"status": "success", "count": len(results), "data": results}
 
+@app.get("/api/scan-intraday")
+def scan_intraday():
+    results = []
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futures = {executor.submit(fetch_and_scan_intraday, ticker): ticker for ticker in WATCHLIST}
+        for future in as_completed(futures):
+            res = future.result()
+            if res:
+                results.append(res)
     return {"status": "success", "count": len(results), "data": results}
 
 if __name__ == "__main__":
