@@ -186,7 +186,6 @@ def process_paper_and_algo_trade(ticker, pattern, entry_price, target, sl, curre
         "type": "EXECUTION"
     })
 
-# --- PRECISION SPEC-BASED PATTERN SCANNING ENGINE ---
 def identify_chart_pattern(df):
     closes = df['Close'].values
     highs = df['High'].values
@@ -199,11 +198,9 @@ def identify_chart_pattern(df):
     offset = len(df) - 60 if len(df) >= 60 else 0
 
     # 1. Inverse Head & Shoulders
-    # Rule: Entry @ Neckline, SL @ Right Shoulder, Target = Neckline + Head-Depth
     if len(recent_lows_idx) >= 3 and len(recent_maxs_idx) >= 2:
         l1, l2, l3 = recent_lows_idx[-3], recent_lows_idx[-2], recent_lows_idx[-1]
         troughs = lows[-60:][[l1, l2, l3]]
-        head_depth = troughs[0] - troughs[1] # Left Shoulder to Head depth
         right_shoulder = troughs[2]
         
         if troughs[1] < troughs[0] and troughs[1] < troughs[2]:
@@ -221,7 +218,6 @@ def identify_chart_pattern(df):
             return "Inverse H&S", entry, target, sl, upper_trend, lower_trend
 
     # 2. Double Bottom
-    # Rule: Entry @ Resistance Neckline, SL @ Lowest Trough, Target = Entry + Trough-Height
     if len(recent_lows_idx) >= 2 and len(recent_maxs_idx) >= 1:
         l1, l2 = recent_lows_idx[-2], recent_lows_idx[-1]
         b1, b2 = lows[-60:][l1], lows[-60:][l2]
@@ -237,13 +233,10 @@ def identify_chart_pattern(df):
             return "Double Bottom", entry, target, sl, upper_trend, lower_trend
 
     # 3. Cup and Handle
-    # Rule: Entry @ Rim Resistance, SL @ Lowest point of Handle, Target = Entry + Cup Depth
     if len(recent_lows_idx) >= 2 and len(recent_maxs_idx) >= 2:
         cup_bottom = np.min(lows[-40:-10])
         rim_high = np.max(highs[-40:-10])
         handle_low = np.min(lows[-10:])
-        
-        # Ensure handle retracement is shallow (< 50% of cup depth)
         cup_depth = rim_high - cup_bottom
         if handle_low > (rim_high - 0.5 * cup_depth):
             entry = round(float(rim_high), 2)
@@ -255,7 +248,6 @@ def identify_chart_pattern(df):
             return "Cup and Handle", entry, target, sl, upper_trend, lower_trend
 
     # 4. Bull Flag / High Tight Flag
-    # Rule: Entry @ Parallel upper flag boundary close, SL @ Lowest point of flag, Target = Entry + Flagpole Height
     price_30_bars_ago = closes[-30] if len(closes) >= 30 else closes[0]
     flagpole_height = np.max(highs[-15:]) - price_30_bars_ago
     recent_range = (np.max(highs[-10:]) - np.min(lows[-10:])) / current_price
@@ -270,7 +262,6 @@ def identify_chart_pattern(df):
         return "High Tight Flag", entry, target, sl, upper_trend, lower_trend
 
     # 5. Ascending / Symmetrical Triangle
-    # Rule: Entry @ Flat Horizontal Barrier close, SL @ Recent minor swing low inside triangle, Target = Entry + Triangle Base Width
     if len(recent_maxs_idx) >= 2 and len(recent_lows_idx) >= 2:
         i_high1, i_high2 = recent_maxs_idx[-2], recent_maxs_idx[-1]
         recent_high_vals = highs[-60:][[i_high1, i_high2]]
@@ -289,8 +280,8 @@ def identify_chart_pattern(df):
 
     # Default Rectangle / Consolidation
     entry = round(current_price * 1.005, 2)
-    sl = round(current_price * 0.97, 2)
-    target = round(current_price * 1.05, 2)
+    sl = round(current_price * 0.98, 2)
+    target = round(entry + 2.1 * (entry - sl), 2) # Ensure R:R >= 1:2
     upper_trend = [{"time": dates[-20], "value": round(float(np.max(highs[-20:])), 2)}, {"time": dates[-1], "value": round(float(np.max(highs[-20:])), 2)}]
     lower_trend = [{"time": dates[-20], "value": round(float(np.min(lows[-20:])), 2)}, {"time": dates[-1], "value": round(float(np.min(lows[-20:])), 2)}]
     return "Rectangle Breakout", entry, target, sl, upper_trend, lower_trend
@@ -305,16 +296,23 @@ def fetch_and_scan_stock(ticker):
         if df is None or df.empty or len(df) < 30:
             return None
             
+        # 1. STRICT VOLUME SURGE CHECK (> 1.49x 20-period SMA)
         vol_sma = df['Volume'].rolling(window=20).mean().iloc[-1]
         current_vol = df['Volume'].iloc[-1]
-        if current_vol < (vol_sma * 1.15):
-            return None # Require > 1x volume surge
+        if current_vol <= (vol_sma * 1.49):
+            return None # Skip stocks without >1.49x volume surge
 
         if not evaluate_custom_strategy(df, TRADING_CONFIG["selected_strategy"]):
             return None
 
         pattern, entry, target, sl, upper_trend, lower_trend = identify_chart_pattern(df)
         
+        # 2. STRICT RISK-TO-REWARD (R:R >= 1:2) FILTER
+        risk = entry - sl
+        reward = target - entry
+        if risk <= 0 or (reward / risk) < 2.0:
+            return None # Filter out stocks where R:R is less than 1:2
+
         last_row = df.iloc[-1]
         prev_row = df.iloc[-2]
         price = float(last_row['Close'])
@@ -336,6 +334,8 @@ def fetch_and_scan_stock(ticker):
                 "close": round(float(row['Close']), 2)
             })
 
+        rr_ratio = round(reward / risk, 2)
+
         return {
             "ticker": ticker,
             "name": ticker.replace(".NS", ""),
@@ -345,7 +345,8 @@ def fetch_and_scan_stock(ticker):
             "entry": entry,
             "target": target,
             "sl": sl,
-            "volume": f"{round(current_vol/vol_sma, 1)}x ⚡",
+            "rr_ratio": f"1:{rr_ratio}",
+            "volume": f"{round(current_vol/vol_sma, 2)}x ⚡",
             "ohlc": ohlc,
             "upper_trend": upper_trend,
             "lower_trend": lower_trend
