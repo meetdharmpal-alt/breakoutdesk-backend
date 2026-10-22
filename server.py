@@ -16,7 +16,7 @@ from datetime import datetime
 import threading
 import time
 
-# Diagnostic Kite import check
+# Safe Kite import check
 KITE_IMPORT_ERROR = None
 try:
     from kiteconnect import KiteConnect
@@ -24,7 +24,6 @@ try:
 except Exception as e:
     KITE_AVAILABLE = False
     KITE_IMPORT_ERROR = str(e)
-    print(f"CRITICAL KITE IMPORT ERROR: {e}")
 
 app = FastAPI(title="BreakoutDesk Pattern Screener & Algo Terminal")
 
@@ -347,4 +346,219 @@ def fetch_and_scan_stock(ticker):
         if not evaluate_custom_strategy(df, TRADING_CONFIG["selected_strategy"]):
             return None
 
-        pattern, entry, target, sl, upper_trend,
+        pattern, entry, target, sl, upper_trend, lower_trend = identify_chart_pattern(df, is_intraday=False)
+        
+        risk = entry - sl
+        reward = target - entry
+        if risk <= 0 or (reward / risk) < 2.0:
+            return None
+
+        last_row = df.iloc[-1]
+        prev_row = df.iloc[-2]
+        price = float(last_row['Close'])
+        prev_close = float(prev_row['Close'])
+        chg = round(((price - prev_close) / prev_close) * 100, 2)
+
+        if price >= entry and TRADING_CONFIG["algo_trading_enabled"]:
+            execute_algo_buy(ticker, pattern, entry, target, sl, price)
+
+        ohlc = []
+        for idx, row in df.iloc[-50:].iterrows():
+            date_str = idx.strftime('%Y-%m-%d') if hasattr(idx, 'strftime') else str(idx)[:10]
+            ohlc.append({
+                "time": date_str,
+                "open": round(float(row['Open']), 2),
+                "high": round(float(row['High']), 2),
+                "low": round(float(row['Low']), 2),
+                "close": round(float(row['Close']), 2)
+            })
+
+        rr_ratio = round(reward / risk, 2)
+        return {
+            "ticker": ticker,
+            "name": ticker.replace(".NS", ""),
+            "price": round(price, 2),
+            "chg": chg,
+            "pattern": pattern,
+            "entry": entry,
+            "target": target,
+            "sl": sl,
+            "rr_ratio": f"1:{rr_ratio}",
+            "volume": f"{round(current_vol/vol_sma, 2)}x ⚡",
+            "ohlc": ohlc,
+            "upper_trend": upper_trend,
+            "lower_trend": lower_trend
+        }
+    except Exception:
+        return None
+
+def fetch_and_scan_intraday(ticker):
+    try:
+        t = yf.Ticker(ticker, session=session)
+        df = t.history(period="5d", interval="15m", auto_adjust=True)
+        if df is None or df.empty or len(df) < 30:
+            return None
+            
+        vol_sma = df['Volume'].rolling(window=20).mean().iloc[-1]
+        current_vol = df['Volume'].iloc[-1]
+        if current_vol <= (vol_sma * 1.30):
+            return None
+
+        pattern, entry, target, sl, upper_trend, lower_trend = identify_chart_pattern(df, is_intraday=True)
+        
+        risk = entry - sl
+        reward = target - entry
+        if risk <= 0 or (reward / risk) < 2.0:
+            return None
+
+        last_row = df.iloc[-1]
+        prev_row = df.iloc[-2]
+        price = float(last_row['Close'])
+        prev_close = float(prev_row['Close'])
+        chg = round(((price - prev_close) / prev_close) * 100, 2)
+
+        ohlc = []
+        for idx, row in df.iloc[-60:].iterrows():
+            date_str = idx.strftime('%Y-%m-%d %H:%M') if hasattr(idx, 'strftime') else str(idx)[:16]
+            ohlc.append({
+                "time": date_str,
+                "open": round(float(row['Open']), 2),
+                "high": round(float(row['High']), 2),
+                "low": round(float(row['Low']), 2),
+                "close": round(float(row['Close']), 2)
+            })
+
+        rr_ratio = round(reward / risk, 2)
+        return {
+            "ticker": ticker,
+            "name": ticker.replace(".NS", ""),
+            "price": round(price, 2),
+            "chg": chg,
+            "pattern": pattern,
+            "entry": entry,
+            "target": target,
+            "sl": sl,
+            "rr_ratio": f"1:{rr_ratio}",
+            "volume": f"{round(current_vol/vol_sma, 2)}x ⚡",
+            "ohlc": ohlc,
+            "upper_trend": upper_trend,
+            "lower_trend": lower_trend
+        }
+    except Exception:
+        return None
+
+@app.get("/")
+def home(request_token: str = None, status: str = None):
+    if request_token:
+        return HTMLResponse(content=f"""
+            <html>
+                <body style="background: #0b0f19; color: #fff; font-family: sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0;">
+                    <div style="background: #111827; padding: 30px; border-radius: 12px; border: 1px solid #374151; max-width: 500px; text-align: center; box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5);">
+                        <h2 style="color: #10b981; margin-top: 0;">⚡ Zerodha Authorization Successful!</h2>
+                        <p style="color: #9ca3af; font-size: 14px; margin-bottom: 10px;">Your Request Token has been captured:</p>
+                        <input type="text" value="{request_token}" readonly style="width: 100%; background: #030712; border: 1px solid #4b5563; color: #38bdf8; padding: 12px; border-radius: 6px; font-family: monospace; text-align: center; font-size: 16px; margin-bottom: 15px; box-sizing: border-box;" onclick="this.select(); document.execCommand('copy'); alert('Token copied to clipboard!');">
+                        <p style="color: #f59e0b; font-size: 12px; margin-top: 0;">(Click the box above to automatically copy your token)</p>
+                        <p style="color: #6b7280; font-size: 12px;">Go back to your BreakoutDesk terminal, paste it into the Request Token box, and click Connect & Sync.</p>
+                    </div>
+                </body>
+            </html>
+        """)
+    return {"status": "online", "message": "BreakoutDesk Pattern & Algo Screener is running!"}
+
+@app.get("/api/health")
+def health_check():
+    return {"status": "ok"}
+
+@app.get("/api/config")
+def get_config():
+    return {"status": "success", "config": TRADING_CONFIG}
+
+@app.post("/api/config/update")
+def update_config(settings: dict):
+    global TRADING_CONFIG
+    for key, val in settings.items():
+        if key in TRADING_CONFIG:
+            TRADING_CONFIG[key] = val
+    return {"status": "success", "config": TRADING_CONFIG}
+
+@app.post("/api/kite/connect")
+def connect_kite(payload: dict):
+    global TRADING_CONFIG
+    api_key = payload.get("api_key")
+    api_secret = payload.get("api_secret")
+    request_token = payload.get("request_token")
+
+    if not api_key or not api_secret or not request_token:
+        raise HTTPException(status_code=400, detail="API Key, Secret, and Request Token are required.")
+
+    if not KITE_AVAILABLE:
+        raise HTTPException(status_code=500, detail=f"Kite import failed: {KITE_IMPORT_ERROR}")
+
+    try:
+        kite = KiteConnect(api_key=api_key)
+        data = kite.generate_session(request_token, api_secret=api_secret)
+        access_token = data["access_token"]
+        
+        TRADING_CONFIG["kite_api_key"] = api_key
+        TRADING_CONFIG["kite_api_secret"] = api_secret
+        TRADING_CONFIG["kite_access_token"] = access_token
+        TRADING_CONFIG["kite_connected"] = True
+        
+        TRADING_CONFIG["trade_logs"].append({
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "message": "[KITE CONNECT] Successfully connected and generated live access token!",
+            "ticker": "SYSTEM",
+            "type": "KITE"
+        })
+        return {"status": "success", "message": "Connected to Zerodha Kite successfully!"}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Kite session error: {str(e)}")
+
+@app.get("/api/algo/dashboard")
+def get_algo_dashboard():
+    active_positions = TRADING_CONFIG["active_positions"]
+    invested_capital = sum([p["invested"] for p in active_positions])
+    current_value = sum([p["quantity"] * p["current_price"] for p in active_positions])
+    unrealized_pnl = current_value - invested_capital
+
+    return {
+        "status": "success",
+        "paper_trading_enabled": TRADING_CONFIG["paper_trading_enabled"],
+        "algo_trading_enabled": TRADING_CONFIG["algo_trading_enabled"],
+        "selected_strategy": TRADING_CONFIG["selected_strategy"],
+        "kite_connected": TRADING_CONFIG["kite_connected"],
+        "available_paper_funds": round(TRADING_CONFIG["paper_funds"], 2),
+        "invested_capital": round(invested_capital, 2),
+        "current_portfolio_value": round(current_value, 2),
+        "unrealized_pnl": round(unrealized_pnl, 2),
+        "active_positions_count": len(active_positions),
+        "active_positions": active_positions,
+        "trade_journal": TRADING_CONFIG["trade_journal"],
+        "trade_logs": TRADING_CONFIG["trade_logs"][-50:]
+    }
+
+@app.get("/api/scan-market")
+def scan_market():
+    results = []
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futures = {executor.submit(fetch_and_scan_stock, ticker): ticker for ticker in WATCHLIST}
+        for future in as_completed(futures):
+            res = future.result()
+            if res:
+                results.append(res)
+    return {"status": "success", "count": len(results), "data": results}
+
+@app.get("/api/scan-intraday")
+def scan_intraday():
+    results = []
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futures = {executor.submit(fetch_and_scan_intraday, ticker): ticker for ticker in WATCHLIST}
+        for future in as_completed(futures):
+            res = future.result()
+            if res:
+                results.append(res)
+    return {"status": "success", "count": len(results), "data": results}
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 10000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
