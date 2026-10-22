@@ -6,3 +6,4 @@ numpy
 scipy
 requests
 pydantic
+kiteconnect
