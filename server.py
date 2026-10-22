@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 import requests
+import hashlib
 from scipy.signal import argrelextrema
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
@@ -224,20 +225,25 @@ def execute_algo_buy(ticker, pattern, entry, target, sl, current_price):
 
     if TRADING_CONFIG["kite_connected"] and TRADING_CONFIG["kite_access_token"] and TRADING_CONFIG["kite_api_key"]:
         try:
-            from kiteconnect import KiteConnect
-            kite = KiteConnect(api_key=TRADING_CONFIG["kite_api_key"])
-            kite.set_access_token(TRADING_CONFIG["kite_access_token"])
             clean_ticker = ticker.replace(".NS", "")
-            kite.place_order(
-                variety=kite.VARIETY_REGULAR,
-                exchange=kite.EXCHANGE_NSE,
-                tradingsymbol=clean_ticker,
-                transaction_type=kite.TRANSACTION_TYPE_BUY,
-                quantity=quantity,
-                product=kite.PRODUCT_CNC,
-                order_type=kite.ORDER_TYPE_MARKET
-            )
-            TRADING_CONFIG["trade_logs"].append({"timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "message": f"[KITE LIVE ORDER] Placed MARKET BUY for {quantity}x {clean_ticker}", "ticker": ticker, "type": "KITE"})
+            headers = {
+                "X-Kite-Version": "3",
+                "Authorization": f"token {TRADING_CONFIG['kite_api_key']}:{TRADING_CONFIG['kite_access_token']}"
+            }
+            payload = {
+                "variety": "regular",
+                "exchange": "NSE",
+                "tradingsymbol": clean_ticker,
+                "transaction_type": "BUY",
+                "quantity": quantity,
+                "product": "CNC",
+                "order_type": "MARKET"
+            }
+            order_res = requests.post("https://api.kite.trade/orders/regular", headers=headers, data=payload)
+            if order_res.status_code == 200:
+                TRADING_CONFIG["trade_logs"].append({"timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "message": f"[KITE LIVE ORDER] Placed MARKET BUY for {quantity}x {clean_ticker}", "ticker": ticker, "type": "KITE"})
+            else:
+                TRADING_CONFIG["trade_logs"].append({"timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "message": f"[KITE ERROR] Order response: {order_res.text}", "ticker": ticker, "type": "ERROR"})
         except Exception as e:
             TRADING_CONFIG["trade_logs"].append({"timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "message": f"[KITE ERROR] Failed to place order: {str(e)}", "ticker": ticker, "type": "ERROR"})
 
@@ -484,14 +490,25 @@ def connect_kite(payload: dict):
         raise HTTPException(status_code=400, detail="API Key, Secret, and Request Token are required.")
 
     try:
-        from kiteconnect import KiteConnect
-    except ImportError:
-        raise HTTPException(status_code=500, detail="kiteconnect package is not available in the server runtime environment.")
+        # Generate checksum: sha256(api_key + request_token + api_secret)
+        hasher = hashlib.sha256((api_key + request_token + api_secret).encode("utf-8"))
+        checksum = hasher.hexdigest()
 
-    try:
-        kite = KiteConnect(api_key=api_key)
-        data = kite.generate_session(request_token, api_secret=api_secret)
-        access_token = data["access_token"]
+        token_res = requests.post(
+            "https://api.kite.trade/session/token",
+            data={
+                "api_key": api_key,
+                "request_token": request_token,
+                "checksum": checksum
+            },
+            headers={"X-Kite-Version": "3"}
+        )
+        token_data = token_res.json()
+
+        if token_res.status_code != 200 or "data" not in token_data:
+            raise HTTPException(status_code=400, detail=f"Kite session error: {token_data.get('message', token_res.text)}")
+
+        access_token = token_data["data"]["access_token"]
         
         TRADING_CONFIG["kite_api_key"] = api_key
         TRADING_CONFIG["kite_api_secret"] = api_secret
@@ -500,13 +517,13 @@ def connect_kite(payload: dict):
         
         TRADING_CONFIG["trade_logs"].append({
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "message": "[KITE CONNECT] Successfully connected and generated live access token!",
+            "message": "[KITE CONNECT] Successfully connected and generated live access token via REST API!",
             "ticker": "SYSTEM",
             "type": "KITE"
         })
         return {"status": "success", "message": "Connected to Zerodha Kite successfully!"}
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Kite session error: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Kite connection exception: {str(e)}")
 
 @app.get("/api/algo/dashboard")
 def get_algo_dashboard():
