@@ -124,7 +124,7 @@ def identify_chart_pattern(df, is_intraday=False):
     lows_idx = argrelextrema(sub_lows, np.less, order=3)[0]
     offset = n - lookback
 
-    # 1. Ascending Triangle
+    # 1. Ascending Triangle (Flat Top + Higher Lows)
     if len(maxs_idx) >= 2 and len(lows_idx) >= 2:
         m1, m2 = maxs_idx[-2], maxs_idx[-1]
         res_vals = sub_highs[[m1, m2]]
@@ -135,12 +135,12 @@ def identify_chart_pattern(df, is_intraday=False):
             swing_low_2 = float(sub_lows[lows_idx[-1]])
             if swing_low_2 > swing_low_1:
                 sl = round(float(swing_low_2 * 0.99), 2)
-                target = round(float(entry + (resistance - swing_low_1)), 2)
+                target = round(float(entry + 1.5 * (entry - sl)), 2)
                 upper_trend = [{"time": dates[offset + m1], "value": resistance}, {"time": dates[-1], "value": resistance}]
                 lower_trend = [{"time": dates[offset + lows_idx[-2]], "value": swing_low_1}, {"time": dates[offset + lows_idx[-1]], "value": swing_low_2}]
                 return "Ascending Triangle", entry, target, sl, upper_trend, lower_trend
 
-    # 2. Double Bottom
+    # 2. Double Bottom (W Pattern)
     if len(lows_idx) >= 2:
         l1, l2 = lows_idx[-2], lows_idx[-1]
         b1, b2 = sub_lows[l1], sub_lows[l2]
@@ -148,7 +148,7 @@ def identify_chart_pattern(df, is_intraday=False):
             peak_val = float(max(sub_highs[l1:l2+1])) if l2 > l1 else float(sub_highs[-1])
             entry = round(peak_val, 2)
             sl = round(float(min(b1, b2) * 0.99), 2)
-            target = round(float(entry + (entry - min(b1, b2))), 2)
+            target = round(float(entry + 1.5 * (entry - sl)), 2)
             upper_trend = [{"time": dates[offset + l1], "value": entry}, {"time": dates[-1], "value": entry}]
             lower_trend = [{"time": dates[offset + l1], "value": float(b1)}, {"time": dates[offset + l2], "value": float(b2)}]
             return "Double Bottom", entry, target, sl, upper_trend, lower_trend
@@ -161,7 +161,7 @@ def identify_chart_pattern(df, is_intraday=False):
             neck = float(max(sub_highs[maxs_idx[-2:]]))
             entry = round(neck, 2)
             sl = round(float(troughs[2] * 0.99), 2)
-            target = round(float(entry + (entry - troughs[1])), 2)
+            target = round(float(entry + 1.5 * (entry - sl)), 2)
             upper_trend = [{"time": dates[offset + maxs_idx[-2]], "value": neck}, {"time": dates[-1], "value": neck}]
             lower_trend = [
                 {"time": dates[offset + l1], "value": float(troughs[0])},
@@ -179,7 +179,7 @@ def identify_chart_pattern(df, is_intraday=False):
         if handle_low > (rim_high - 0.5 * cup_depth):
             entry = round(rim_high, 2)
             sl = round(float(handle_low * 0.99), 2)
-            target = round(float(entry + cup_depth), 2)
+            target = round(float(entry + 1.5 * (entry - sl)), 2)
             upper_trend = [{"time": dates[-40], "value": rim_high}, {"time": dates[-1], "value": rim_high}]
             lower_trend = [{"time": dates[-25], "value": cup_bottom}, {"time": dates[-6], "value": handle_low}]
             return "Cup and Handle", entry, target, sl, upper_trend, lower_trend
@@ -191,16 +191,15 @@ def identify_chart_pattern(df, is_intraday=False):
     if (flag_high - flag_low) / current_price <= 0.07:
         entry = round(flag_high, 2)
         sl = round(float(flag_low * 0.99), 2)
-        flagpole = flag_high - closes[-min(30, n)]
-        target = round(float(entry + max(flagpole, entry - sl)), 2)
+        target = round(float(entry + 1.5 * (entry - sl)), 2)
         upper_trend = [{"time": dates[-flag_len], "value": flag_high}, {"time": dates[-1], "value": flag_high}]
         lower_trend = [{"time": dates[-flag_len], "value": flag_low}, {"time": dates[-1], "value": flag_low}]
         return "High Tight Flag", entry, target, sl, upper_trend, lower_trend
 
-    # Default Rectangle Breakout
+    # Default Clean Breakout
     entry = round(float(current_price * 1.005), 2)
-    sl = round(float(current_price * 0.975), 2)
-    target = round(float(entry + 2.0 * (entry - sl)), 2)
+    sl = round(float(current_price * 0.98), 2)
+    target = round(float(entry + 1.5 * (entry - sl)), 2)
     upper_trend = [{"time": dates[-20], "value": float(np.max(highs[-20:]))}, {"time": dates[-1], "value": float(np.max(highs[-20:]))}]
     lower_trend = [{"time": dates[-20], "value": float(np.min(lows[-20:]))}, {"time": dates[-1], "value": float(np.min(lows[-20:]))}]
     return "Rectangle Breakout", entry, target, sl, upper_trend, lower_trend
@@ -342,7 +341,6 @@ def automated_market_scanner_and_manager():
                         pattern, entry, target, sl, _, _ = identify_chart_pattern(df, is_intraday=False)
                         risk = entry - sl
                         reward = target - entry
-                        # Updated R:R requirement to 1:1.5 or more
                         if risk <= 0 or (reward / risk) < 1.5:
                             continue
 
@@ -379,7 +377,6 @@ def fetch_and_scan_stock(ticker):
         
         risk = entry - sl
         reward = target - entry
-        # Updated R:R requirement to 1:1.5 or more
         if risk <= 0 or (reward / risk) < 1.5:
             return None
 
@@ -392,7 +389,7 @@ def fetch_and_scan_stock(ticker):
         ohlc = []
         for idx, row in df.iloc[-50:].iterrows():
             date_str = idx.strftime('%Y-%m-%d') if hasattr(idx, 'strftime') else str(idx)[:10]
-            # Explicitly mapping high and low wicks/shadows for accurate candlestick rendering
+            # Exact mapping for high/low wicks and shadow rendering
             ohlc.append({
                 "time": date_str,
                 "open": round(float(row['Open']), 2),
