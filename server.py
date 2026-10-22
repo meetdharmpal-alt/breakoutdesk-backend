@@ -6,7 +6,7 @@ import pandas as pd
 import yfinance as yf
 import requests
 from scipy.signal import argrelextrema
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import os
 import uvicorn
@@ -14,8 +14,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 import threading
 import time
+from kiteconnect import KiteConnect
 
-app = FastAPI(title="BreakoutDesk Pattern Screener & Algo Terminal")
+app = FastAPI(title="BreakoutDesk Pattern Screener & Algo Terminal (Kite Integrated)")
 
 app.add_middleware(
     CORSMiddleware,
@@ -62,9 +63,10 @@ TRADING_CONFIG = {
     "paper_funds": 1000000.0,
     "initial_funds": 1000000.0,
     "position_size_pct": 0.10,
-    "telegram_bot_token": "",
-    "telegram_chat_id": "",
-    "notification_email": "",
+    "kite_api_key": "",
+    "kite_api_secret": "",
+    "kite_access_token": "",
+    "kite_connected": False,
     "active_positions": [],
     "trade_journal": [],
     "trade_logs": []
@@ -109,7 +111,6 @@ def identify_chart_pattern(df, is_intraday=False):
     lows = df['Low'].values
     n = len(df)
     
-    # Format timestamps exactly as expected by chart series
     time_fmt = '%Y-%m-%d %H:%M' if is_intraday else '%Y-%m-%d'
     dates = [idx.strftime(time_fmt) if hasattr(idx, 'strftime') else str(idx)[:16] for idx in df.index]
     current_price = closes[-1]
@@ -122,7 +123,7 @@ def identify_chart_pattern(df, is_intraday=False):
     lows_idx = argrelextrema(sub_lows, np.less, order=2)[0]
     offset = n - lookback
 
-    # 1. Ascending Triangle (Flat resistance on top, rising support line on bottom)
+    # 1. Ascending Triangle
     if len(maxs_idx) >= 2 and len(lows_idx) >= 2:
         m1, m2 = maxs_idx[-2], maxs_idx[-1]
         res_vals = sub_highs[[m1, m2]]
@@ -221,6 +222,25 @@ def execute_algo_buy(ticker, pattern, entry, target, sl, current_price):
     invested_amount = quantity * entry
     TRADING_CONFIG["paper_funds"] -= invested_amount
 
+    # If Kite Live Algo is connected, place real order via Kite API
+    if TRADING_CONFIG["kite_connected"] and TRADING_CONFIG["kite_access_token"] and TRADING_CONFIG["kite_api_key"]:
+        try:
+            kite = KiteConnect(api_key=TRADING_CONFIG["kite_api_key"])
+            kite.set_access_token(TRADING_CONFIG["kite_access_token"])
+            clean_ticker = ticker.replace(".NS", "")
+            kite.place_order(
+                variety=kite.VARIETY_REGULAR,
+                exchange=kite.EXCHANGE_NSE,
+                tradingsymbol=clean_ticker,
+                transaction_type=kite.TRANSACTION_TYPE_BUY,
+                quantity=quantity,
+                product=kite.PRODUCT_CNC,
+                order_type=kite.ORDER_TYPE_MARKET
+            )
+            TRADING_CONFIG["trade_logs"].append({"timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "message": f"[KITE LIVE ORDER] Placed MARKET BUY for {quantity}x {clean_ticker}", "ticker": ticker, "type": "KITE"})
+        except Exception as e:
+            TRADING_CONFIG["trade_logs"].append({"timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "message": f"[KITE ERROR] Failed to place order: {str(e)}", "ticker": ticker, "type": "ERROR"})
+
     new_position = {
         "ticker": ticker,
         "pattern": pattern,
@@ -233,7 +253,7 @@ def execute_algo_buy(ticker, pattern, entry, target, sl, current_price):
         "entry_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     }
     TRADING_CONFIG["active_positions"].append(new_position)
-    msg = f"[ALGO LIVE EXECUTION] BUY {quantity} shares of {ticker} @ Entry Rs. {entry} | Target: Rs. {target} | SL: Rs. {sl}"
+    msg = f"[ALGO EXECUTION] BUY {quantity} shares of {ticker} @ Entry Rs. {entry} | Target: Rs. {target} | SL: Rs. {sl}"
     TRADING_CONFIG["trade_logs"].append({"timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "message": msg, "ticker": ticker, "type": "EXECUTION"})
 
 def monitor_and_manage_positions():
@@ -439,6 +459,36 @@ def update_config(settings: dict):
             TRADING_CONFIG[key] = val
     return {"status": "success", "config": TRADING_CONFIG}
 
+@app.post("/api/kite/connect")
+def connect_kite(payload: dict):
+    global TRADING_CONFIG
+    api_key = payload.get("api_key")
+    api_secret = payload.get("api_secret")
+    request_token = payload.get("request_token")
+
+    if not api_key or not api_secret:
+        raise HTTPException(status_code=400, detail="API Key and Secret are required.")
+
+    TRADING_CONFIG["kite_api_key"] = api_key
+    TRADING_CONFIG["kite_api_secret"] = api_secret
+
+    try:
+        if request_token:
+            kite = KiteConnect(api_key=api_key)
+            data = kite.generate_session(request_token, api_secret=api_secret)
+            access_token = data["access_token"]
+            TRADING_CONFIG["kite_access_token"] = access_token
+            TRADING_CONFIG["kite_connected"] = True
+            TRADING_CONFIG["trade_logs"].append({"timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "message": "[KITE CONNECT] Successfully connected and generated live access token!", "ticker": "SYSTEM", "type": "KITE"})
+            return {"status": "success", "message": "Connected to Zerodha Kite successfully!"}
+        else:
+            # Return login URL for user authentication
+            kite = KiteConnect(api_key=api_key)
+            login_url = kite.login_url()
+            return {"status": "redirect", "login_url": login_url}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/api/algo/dashboard")
 def get_algo_dashboard():
     active_positions = TRADING_CONFIG["active_positions"]
@@ -451,6 +501,7 @@ def get_algo_dashboard():
         "paper_trading_enabled": TRADING_CONFIG["paper_trading_enabled"],
         "algo_trading_enabled": TRADING_CONFIG["algo_trading_enabled"],
         "selected_strategy": TRADING_CONFIG["selected_strategy"],
+        "kite_connected": TRADING_CONFIG["kite_connected"],
         "available_paper_funds": round(TRADING_CONFIG["paper_funds"], 2),
         "invested_capital": round(invested_capital, 2),
         "current_portfolio_value": round(current_value, 2),
