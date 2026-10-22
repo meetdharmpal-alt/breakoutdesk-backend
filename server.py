@@ -200,7 +200,7 @@ def identify_chart_pattern(df, is_intraday=False):
     # Default Rectangle Breakout
     entry = round(float(current_price * 1.005), 2)
     sl = round(float(current_price * 0.975), 2)
-    target = round(float(entry + 2.5 * (entry - sl)), 2)
+    target = round(float(entry + 2.0 * (entry - sl)), 2)
     upper_trend = [{"time": dates[-20], "value": float(np.max(highs[-20:]))}, {"time": dates[-1], "value": float(np.max(highs[-20:]))}]
     lower_trend = [{"time": dates[-20], "value": float(np.min(lows[-20:]))}, {"time": dates[-1], "value": float(np.min(lows[-20:]))}]
     return "Rectangle Breakout", entry, target, sl, upper_trend, lower_trend
@@ -265,7 +265,6 @@ def automated_market_scanner_and_manager():
     while True:
         try:
             if TRADING_CONFIG["algo_trading_enabled"]:
-                # 1. Manage and exit active positions when Target or SL is hit
                 if TRADING_CONFIG["active_positions"]:
                     for pos in list(TRADING_CONFIG["active_positions"]):
                         t = yf.Ticker(pos["ticker"], session=session)
@@ -325,8 +324,7 @@ def automated_market_scanner_and_manager():
                                 TRADING_CONFIG["active_positions"].remove(pos)
                                 TRADING_CONFIG["trade_logs"].append({"timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "message": f"[ALGO EXIT] STOP LOSS HIT for {pos['ticker']} @ Rs. {pos['sl']} | PnL: Rs. {round(pnl, 2)}", "ticker": pos["ticker"], "type": "EXIT"})
 
-                # 2. Automatically scan watchlist for new breakout entries to trigger orders
-                for ticker in WATCHLIST[:15]: # Scans top 15 high-liquidity stocks in background loop
+                for ticker in WATCHLIST[:15]:
                     try:
                         t = yf.Ticker(ticker, session=session)
                         if not check_fundamentals(ticker, stock_obj=t):
@@ -344,7 +342,8 @@ def automated_market_scanner_and_manager():
                         pattern, entry, target, sl, _, _ = identify_chart_pattern(df, is_intraday=False)
                         risk = entry - sl
                         reward = target - entry
-                        if risk <= 0 or (reward / risk) < 2.0:
+                        # Updated R:R requirement to 1:1.5 or more
+                        if risk <= 0 or (reward / risk) < 1.5:
                             continue
 
                         price = float(df['Close'].iloc[-1])
@@ -380,7 +379,8 @@ def fetch_and_scan_stock(ticker):
         
         risk = entry - sl
         reward = target - entry
-        if risk <= 0 or (reward / risk) < 2.0:
+        # Updated R:R requirement to 1:1.5 or more
+        if risk <= 0 or (reward / risk) < 1.5:
             return None
 
         last_row = df.iloc[-1]
@@ -392,6 +392,7 @@ def fetch_and_scan_stock(ticker):
         ohlc = []
         for idx, row in df.iloc[-50:].iterrows():
             date_str = idx.strftime('%Y-%m-%d') if hasattr(idx, 'strftime') else str(idx)[:10]
+            # Explicitly mapping high and low wicks/shadows for accurate candlestick rendering
             ohlc.append({
                 "time": date_str,
                 "open": round(float(row['Open']), 2),
@@ -435,7 +436,7 @@ def fetch_and_scan_intraday(ticker):
         
         risk = entry - sl
         reward = target - entry
-        if risk <= 0 or (reward / risk) < 2.0:
+        if risk <= 0 or (reward / risk) < 1.5:
             return None
 
         last_row = df.iloc[-1]
