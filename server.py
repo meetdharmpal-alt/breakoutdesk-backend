@@ -7,6 +7,7 @@ import yfinance as yf
 import requests
 from scipy.signal import argrelextrema
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 import os
 import uvicorn
@@ -445,7 +446,21 @@ def fetch_and_scan_intraday(ticker):
         return None
 
 @app.get("/")
-def home():
+def home(request_token: str = None, status: str = None):
+    if request_token:
+        return HTMLResponse(content=f"""
+            <html>
+                <body style="background: #0b0f19; color: #fff; font-family: sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0;">
+                    <div style="background: #111827; padding: 30px; border-radius: 12px; border: 1px solid #374151; max-width: 500px; text-align: center; box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5);">
+                        <h2 style="color: #10b981; margin-top: 0;">⚡ Zerodha Authorization Successful!</h2>
+                        <p style="color: #9ca3af; font-size: 14px; margin-bottom: 10px;">Your Request Token has been captured:</p>
+                        <input type="text" value="{request_token}" readonly style="width: 100%; background: #030712; border: 1px solid #4b5563; color: #38bdf8; padding: 12px; border-radius: 6px; font-family: monospace; text-align: center; font-size: 16px; margin-bottom: 15px; box-sizing: border-box;" onclick="this.select(); document.execCommand('copy'); alert('Token copied to clipboard!');">
+                        <p style="color: #f59e0b; font-size: 12px; margin-top: 0;">(Click the box above to automatically copy your token)</p>
+                        <p style="color: #6b7280; font-size: 12px;">Go back to your BreakoutDesk terminal, paste it into the Request Token box, and click Connect & Sync.</p>
+                    </div>
+                </body>
+            </html>
+        """)
     return {"status": "online", "message": "BreakoutDesk Pattern & Algo Screener is running!"}
 
 @app.get("/api/health")
