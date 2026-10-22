@@ -103,102 +103,108 @@ def evaluate_custom_strategy(df, strategy_name):
         return (open_p == low_p) and (close_p > open_p)
     return True
 
-def identify_chart_pattern(df):
+def identify_chart_pattern(df, is_intraday=False):
     closes = df['Close'].values
     highs = df['High'].values
     lows = df['Low'].values
     n = len(df)
-    dates = [idx.strftime('%Y-%m-%d %H:%M') if hasattr(idx, 'strftime') else str(idx)[:16] for idx in df.index]
+    
+    # Format timestamps exactly as expected by chart series
+    time_fmt = '%Y-%m-%d %H:%M' if is_intraday else '%Y-%m-%d'
+    dates = [idx.strftime(time_fmt) if hasattr(idx, 'strftime') else str(idx)[:16] for idx in df.index]
     current_price = closes[-1]
 
-    lookback = min(60, n)
+    lookback = min(50, n)
     sub_highs = highs[-lookback:]
     sub_lows = lows[-lookback:]
     
-    maxs_idx = argrelextrema(sub_highs, np.greater, order=3)[0]
-    lows_idx = argrelextrema(sub_lows, np.less, order=3)[0]
+    maxs_idx = argrelextrema(sub_highs, np.greater, order=2)[0]
+    lows_idx = argrelextrema(sub_lows, np.less, order=2)[0]
     offset = n - lookback
 
-    # 1. Inverse Head & Shoulders
-    if len(lows_idx) >= 3 and len(maxs_idx) >= 2:
-        l1, l2, l3 = lows_idx[-3], lows_idx[-2], lows_idx[-1]
-        troughs = sub_lows[[l1, l2, l3]]
-        if troughs[1] < troughs[0] and troughs[1] < troughs[2]:
-            neck = max(sub_highs[maxs_idx[-2:]])
-            entry = round(float(neck), 2)
-            sl = round(float(troughs[2] * 0.99), 2)
-            target = round(float(entry + (entry - troughs[1])), 2)
-            if target > entry:
-                upper_trend = [{"time": dates[offset + maxs_idx[-2]], "value": entry}, {"time": dates[-1], "value": entry}]
-                lower_trend = [{"time": dates[offset + l1], "value": float(troughs[0])}, {"time": dates[offset + l2], "value": float(troughs[1])}, {"time": dates[offset + l3], "value": float(troughs[2])}]
-                return "Inverse H&S", entry, target, sl, upper_trend, lower_trend
-
-    # 2. Double Bottom
-    if len(lows_idx) >= 2:
-        l1, l2 = lows_idx[-2], lows_idx[-1]
-        b1, b2 = sub_lows[l1], sub_lows[l2]
-        if abs(b1 - b2) / b1 < 0.04:
-            peak_between = max(sub_highs[l1:l2+1]) if l2 > l1 else sub_highs[-1]
-            entry = round(float(peak_between), 2)
-            sl = round(float(min(b1, b2) * 0.99), 2)
-            target = round(float(entry + (entry - min(b1, b2))), 2)
-            if target > entry:
-                upper_trend = [{"time": dates[offset + l1], "value": entry}, {"time": dates[-1], "value": entry}]
-                lower_trend = [{"time": dates[offset + l1], "value": float(b1)}, {"time": dates[offset + l2], "value": float(b2)}]
-                return "Double Bottom", entry, target, sl, upper_trend, lower_trend
-
-    # 3. Cup and Handle
-    if n >= 40:
-        cup_bottom = np.min(lows[-40:-10])
-        rim_high = np.max(highs[-40:-10])
-        handle_low = np.min(lows[-10:])
-        cup_depth = rim_high - cup_bottom
-        if handle_low > (rim_high - 0.55 * cup_depth) and current_price >= rim_high * 0.97:
-            entry = round(float(rim_high), 2)
-            sl = round(float(handle_low * 0.99), 2)
-            target = round(float(entry + cup_depth), 2)
-            if target > entry:
-                upper_trend = [{"time": dates[-40], "value": entry}, {"time": dates[-1], "value": entry}]
-                lower_trend = [{"time": dates[-25], "value": float(cup_bottom)}, {"time": dates[-5], "value": float(handle_low)}]
-                return "Cup and Handle", entry, target, sl, upper_trend, lower_trend
-
-    # 4. Ascending Triangle
+    # 1. Ascending Triangle (Flat resistance on top, rising support line on bottom)
     if len(maxs_idx) >= 2 and len(lows_idx) >= 2:
         m1, m2 = maxs_idx[-2], maxs_idx[-1]
         res_vals = sub_highs[[m1, m2]]
         if abs(res_vals[0] - res_vals[1]) / res_vals[0] < 0.03:
-            resistance = res_vals[1]
-            swing_low_rising = sub_lows[lows_idx[-1]]
-            entry = round(float(resistance), 2)
-            sl = round(float(swing_low_rising * 0.99), 2)
-            base_range = resistance - sub_lows[lows_idx[-2]]
-            target = round(float(entry + base_range), 2)
-            if target > entry:
-                upper_trend = [{"time": dates[offset + m1], "value": entry}, {"time": dates[-1], "value": entry}]
-                lower_trend = [{"time": dates[offset + lows_idx[-2]], "value": float(sub_lows[lows_idx[-2]])}, {"time": dates[-1], "value": float(swing_low_rising)}]
-                return "Ascending Triangle", entry, target, sl, upper_trend, lower_trend
+            resistance = float(res_vals[1])
+            entry = round(resistance, 2)
+            swing_low_1 = float(sub_lows[lows_idx[-2]])
+            swing_low_2 = float(sub_lows[lows_idx[-1]])
+            sl = round(float(swing_low_2 * 0.99), 2)
+            target = round(float(entry + (resistance - swing_low_1)), 2)
+            
+            upper_trend = [{"time": dates[offset + m1], "value": resistance}, {"time": dates[-1], "value": resistance}]
+            lower_trend = [{"time": dates[offset + lows_idx[-2]], "value": swing_low_1}, {"time": dates[offset + lows_idx[-1]], "value": swing_low_2}]
+            return "Ascending Triangle", entry, target, sl, upper_trend, lower_trend
+
+    # 2. Inverse Head & Shoulders
+    if len(lows_idx) >= 3 and len(maxs_idx) >= 2:
+        l1, l2, l3 = lows_idx[-3], lows_idx[-2], lows_idx[-1]
+        troughs = sub_lows[[l1, l2, l3]]
+        if troughs[1] < troughs[0] and troughs[1] < troughs[2]:
+            neck = float(max(sub_highs[maxs_idx[-2:]]))
+            entry = round(neck, 2)
+            sl = round(float(troughs[2] * 0.99), 2)
+            target = round(float(entry + (entry - troughs[1])), 2)
+            
+            upper_trend = [{"time": dates[offset + maxs_idx[-2]], "value": neck}, {"time": dates[-1], "value": neck}]
+            lower_trend = [
+                {"time": dates[offset + l1], "value": float(troughs[0])},
+                {"time": dates[offset + l2], "value": float(troughs[1])},
+                {"time": dates[offset + l3], "value": float(troughs[2])}
+            ]
+            return "Inverse H&S", entry, target, sl, upper_trend, lower_trend
+
+    # 3. Double Bottom
+    if len(lows_idx) >= 2:
+        l1, l2 = lows_idx[-2], lows_idx[-1]
+        b1, b2 = sub_lows[l1], sub_lows[l2]
+        if abs(b1 - b2) / b1 < 0.04:
+            peak_val = float(max(sub_highs[l1:l2+1])) if l2 > l1 else float(sub_highs[-1])
+            entry = round(peak_val, 2)
+            sl = round(float(min(b1, b2) * 0.99), 2)
+            target = round(float(entry + (entry - min(b1, b2))), 2)
+            
+            upper_trend = [{"time": dates[offset + l1], "value": entry}, {"time": dates[-1], "value": entry}]
+            lower_trend = [{"time": dates[offset + l1], "value": float(b1)}, {"time": dates[offset + l2], "value": float(b2)}]
+            return "Double Bottom", entry, target, sl, upper_trend, lower_trend
+
+    # 4. Cup and Handle
+    if n >= 35:
+        cup_bottom = float(np.min(lows[-35:-10]))
+        rim_high = float(np.max(highs[-35:-10]))
+        handle_low = float(np.min(lows[-10:]))
+        cup_depth = rim_high - cup_bottom
+        if handle_low > (rim_high - 0.6 * cup_depth):
+            entry = round(rim_high, 2)
+            sl = round(float(handle_low * 0.99), 2)
+            target = round(float(entry + cup_depth), 2)
+            
+            upper_trend = [{"time": dates[-35], "value": rim_high}, {"time": dates[-1], "value": rim_high}]
+            lower_trend = [{"time": dates[-20], "value": cup_bottom}, {"time": dates[-5], "value": handle_low}]
+            return "Cup and Handle", entry, target, sl, upper_trend, lower_trend
 
     # 5. High Tight Flag
-    flag_len = min(12, n)
-    flag_high = np.max(highs[-flag_len:])
-    flag_low = np.min(lows[-flag_len:])
-    flag_range = (flag_high - flag_low) / current_price
-    if flag_range <= 0.08:
-        entry = round(float(flag_high), 2)
+    flag_len = min(10, n)
+    flag_high = float(np.max(highs[-flag_len:]))
+    flag_low = float(np.min(lows[-flag_len:]))
+    if (flag_high - flag_low) / current_price <= 0.08:
+        entry = round(flag_high, 2)
         sl = round(float(flag_low * 0.99), 2)
-        flagpole = flag_high - closes[-min(30, n)]
+        flagpole = flag_high - closes[-min(25, n)]
         target = round(float(entry + max(flagpole, entry - sl)), 2)
-        if target > entry:
-            upper_trend = [{"time": dates[-flag_len], "value": entry}, {"time": dates[-1], "value": entry}]
-            lower_trend = [{"time": dates[-flag_len], "value": float(flag_low)}, {"time": dates[-1], "value": float(flag_low)}]
-            return "High Tight Flag", entry, target, sl, upper_trend, lower_trend
+        
+        upper_trend = [{"time": dates[-flag_len], "value": flag_high}, {"time": dates[-1], "value": flag_high}]
+        lower_trend = [{"time": dates[-flag_len], "value": flag_low}, {"time": dates[-1], "value": flag_low}]
+        return "High Tight Flag", entry, target, sl, upper_trend, lower_trend
 
-    # Default Breakout Channel
+    # Default Channel Breakout
     entry = round(float(current_price * 1.005), 2)
     sl = round(float(current_price * 0.98), 2)
     target = round(float(entry + 2.2 * (entry - sl)), 2)
-    upper_trend = [{"time": dates[-20], "value": round(float(np.max(highs[-20:])), 2)}, {"time": dates[-1], "value": round(float(np.max(highs[-20:])), 2)}]
-    lower_trend = [{"time": dates[-20], "value": round(float(np.min(lows[-20:])), 2)}, {"time": dates[-1], "value": round(float(np.min(lows[-20:])), 2)}]
+    upper_trend = [{"time": dates[-15], "value": float(np.max(highs[-15:]))}, {"time": dates[-1], "value": float(np.max(highs[-15:]))}]
+    lower_trend = [{"time": dates[-15], "value": float(np.min(lows[-15:]))}, {"time": dates[-1], "value": float(np.min(lows[-15:]))}]
     return "Rectangle Breakout", entry, target, sl, upper_trend, lower_trend
 
 def execute_algo_buy(ticker, pattern, entry, target, sl, current_price):
@@ -312,7 +318,7 @@ def fetch_and_scan_stock(ticker):
         if not evaluate_custom_strategy(df, TRADING_CONFIG["selected_strategy"]):
             return None
 
-        pattern, entry, target, sl, upper_trend, lower_trend = identify_chart_pattern(df)
+        pattern, entry, target, sl, upper_trend, lower_trend = identify_chart_pattern(df, is_intraday=False)
         
         risk = entry - sl
         reward = target - entry
@@ -370,7 +376,7 @@ def fetch_and_scan_intraday(ticker):
         if current_vol <= (vol_sma * 1.30):
             return None
 
-        pattern, entry, target, sl, upper_trend, lower_trend = identify_chart_pattern(df)
+        pattern, entry, target, sl, upper_trend, lower_trend = identify_chart_pattern(df, is_intraday=True)
         
         risk = entry - sl
         reward = target - entry
