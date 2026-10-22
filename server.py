@@ -16,15 +16,6 @@ from datetime import datetime
 import threading
 import time
 
-# Safe Kite import check
-KITE_IMPORT_ERROR = None
-try:
-    from kiteconnect import KiteConnect
-    KITE_AVAILABLE = True
-except Exception as e:
-    KITE_AVAILABLE = False
-    KITE_IMPORT_ERROR = str(e)
-
 app = FastAPI(title="BreakoutDesk Pattern Screener & Algo Terminal")
 
 app.add_middleware(
@@ -231,8 +222,9 @@ def execute_algo_buy(ticker, pattern, entry, target, sl, current_price):
     invested_amount = quantity * entry
     TRADING_CONFIG["paper_funds"] -= invested_amount
 
-    if KITE_AVAILABLE and TRADING_CONFIG["kite_connected"] and TRADING_CONFIG["kite_access_token"] and TRADING_CONFIG["kite_api_key"]:
+    if TRADING_CONFIG["kite_connected"] and TRADING_CONFIG["kite_access_token"] and TRADING_CONFIG["kite_api_key"]:
         try:
+            from kiteconnect import KiteConnect
             kite = KiteConnect(api_key=TRADING_CONFIG["kite_api_key"])
             kite.set_access_token(TRADING_CONFIG["kite_access_token"])
             clean_ticker = ticker.replace(".NS", "")
@@ -491,8 +483,10 @@ def connect_kite(payload: dict):
     if not api_key or not api_secret or not request_token:
         raise HTTPException(status_code=400, detail="API Key, Secret, and Request Token are required.")
 
-    if not KITE_AVAILABLE:
-        raise HTTPException(status_code=500, detail=f"Kite import failed: {KITE_IMPORT_ERROR}")
+    try:
+        from kiteconnect import KiteConnect
+    except ImportError:
+        raise HTTPException(status_code=500, detail="kiteconnect package is not available in the server runtime environment.")
 
     try:
         kite = KiteConnect(api_key=api_key)
