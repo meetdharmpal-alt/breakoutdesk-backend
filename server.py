@@ -120,12 +120,11 @@ def identify_chart_pattern(df, is_intraday=False):
     sub_highs = highs[-lookback:]
     sub_lows = lows[-lookback:]
     
-    # Increased order to 3 to filter out minor noise and lock onto clean swing pivots
     maxs_idx = argrelextrema(sub_highs, np.greater, order=3)[0]
     lows_idx = argrelextrema(sub_lows, np.less, order=3)[0]
     offset = n - lookback
 
-    # 1. Ascending Triangle (Flat Top Resistance + Higher Lows)
+    # 1. Ascending Triangle
     if len(maxs_idx) >= 2 and len(lows_idx) >= 2:
         m1, m2 = maxs_idx[-2], maxs_idx[-1]
         res_vals = sub_highs[[m1, m2]]
@@ -134,15 +133,14 @@ def identify_chart_pattern(df, is_intraday=False):
             entry = round(resistance, 2)
             swing_low_1 = float(sub_lows[lows_idx[-2]])
             swing_low_2 = float(sub_lows[lows_idx[-1]])
-            if swing_low_2 > swing_low_1:  # Confirm higher low
+            if swing_low_2 > swing_low_1:
                 sl = round(float(swing_low_2 * 0.99), 2)
                 target = round(float(entry + (resistance - swing_low_1)), 2)
-                
                 upper_trend = [{"time": dates[offset + m1], "value": resistance}, {"time": dates[-1], "value": resistance}]
                 lower_trend = [{"time": dates[offset + lows_idx[-2]], "value": swing_low_1}, {"time": dates[offset + lows_idx[-1]], "value": swing_low_2}]
                 return "Ascending Triangle", entry, target, sl, upper_trend, lower_trend
 
-    # 2. Double Bottom (Two matching troughs with a peak in between)
+    # 2. Double Bottom
     if len(lows_idx) >= 2:
         l1, l2 = lows_idx[-2], lows_idx[-1]
         b1, b2 = sub_lows[l1], sub_lows[l2]
@@ -151,12 +149,11 @@ def identify_chart_pattern(df, is_intraday=False):
             entry = round(peak_val, 2)
             sl = round(float(min(b1, b2) * 0.99), 2)
             target = round(float(entry + (entry - min(b1, b2))), 2)
-            
             upper_trend = [{"time": dates[offset + l1], "value": entry}, {"time": dates[-1], "value": entry}]
             lower_trend = [{"time": dates[offset + l1], "value": float(b1)}, {"time": dates[offset + l2], "value": float(b2)}]
             return "Double Bottom", entry, target, sl, upper_trend, lower_trend
 
-    # 3. Inverse Head & Shoulders (Deep middle trough, higher shoulders)
+    # 3. Inverse Head & Shoulders
     if len(lows_idx) >= 3 and len(maxs_idx) >= 2:
         l1, l2, l3 = lows_idx[-3], lows_idx[-2], lows_idx[-1]
         troughs = sub_lows[[l1, l2, l3]]
@@ -165,7 +162,6 @@ def identify_chart_pattern(df, is_intraday=False):
             entry = round(neck, 2)
             sl = round(float(troughs[2] * 0.99), 2)
             target = round(float(entry + (entry - troughs[1])), 2)
-            
             upper_trend = [{"time": dates[offset + maxs_idx[-2]], "value": neck}, {"time": dates[-1], "value": neck}]
             lower_trend = [
                 {"time": dates[offset + l1], "value": float(troughs[0])},
@@ -174,7 +170,7 @@ def identify_chart_pattern(df, is_intraday=False):
             ]
             return "Inverse H&S", entry, target, sl, upper_trend, lower_trend
 
-    # 4. Cup and Handle (U-shaped base + shallow consolidation handle)
+    # 4. Cup and Handle
     if n >= 40:
         cup_bottom = float(np.min(lows[-40:-12]))
         rim_high = float(np.max(highs[-40:-12]))
@@ -184,12 +180,11 @@ def identify_chart_pattern(df, is_intraday=False):
             entry = round(rim_high, 2)
             sl = round(float(handle_low * 0.99), 2)
             target = round(float(entry + cup_depth), 2)
-            
             upper_trend = [{"time": dates[-40], "value": rim_high}, {"time": dates[-1], "value": rim_high}]
             lower_trend = [{"time": dates[-25], "value": cup_bottom}, {"time": dates[-6], "value": handle_low}]
             return "Cup and Handle", entry, target, sl, upper_trend, lower_trend
 
-    # 5. High Tight Flag (Strong pole surge + tight consolidation channel)
+    # 5. High Tight Flag
     flag_len = min(12, n)
     flag_high = float(np.max(highs[-flag_len:]))
     flag_low = float(np.min(lows[-flag_len:]))
@@ -198,18 +193,41 @@ def identify_chart_pattern(df, is_intraday=False):
         sl = round(float(flag_low * 0.99), 2)
         flagpole = flag_high - closes[-min(30, n)]
         target = round(float(entry + max(flagpole, entry - sl)), 2)
-        
         upper_trend = [{"time": dates[-flag_len], "value": flag_high}, {"time": dates[-1], "value": flag_high}]
         lower_trend = [{"time": dates[-flag_len], "value": flag_low}, {"time": dates[-1], "value": flag_low}]
         return "High Tight Flag", entry, target, sl, upper_trend, lower_trend
 
-    # Clean Default Channel Breakout
+    # Default Rectangle Breakout
     entry = round(float(current_price * 1.005), 2)
     sl = round(float(current_price * 0.975), 2)
     target = round(float(entry + 2.5 * (entry - sl)), 2)
     upper_trend = [{"time": dates[-20], "value": float(np.max(highs[-20:]))}, {"time": dates[-1], "value": float(np.max(highs[-20:]))}]
     lower_trend = [{"time": dates[-20], "value": float(np.min(lows[-20:]))}, {"time": dates[-1], "value": float(np.min(lows[-20:]))}]
     return "Rectangle Breakout", entry, target, sl, upper_trend, lower_trend
+
+def place_kite_order(clean_ticker, transaction_type, quantity):
+    if TRADING_CONFIG["kite_connected"] and TRADING_CONFIG["kite_access_token"] and TRADING_CONFIG["kite_api_key"]:
+        try:
+            headers = {
+                "X-Kite-Version": "3",
+                "Authorization": f"token {TRADING_CONFIG['kite_api_key']}:{TRADING_CONFIG['kite_access_token']}"
+            }
+            payload = {
+                "variety": "regular",
+                "exchange": "NSE",
+                "tradingsymbol": clean_ticker,
+                "transaction_type": transaction_type,
+                "quantity": quantity,
+                "product": "CNC",
+                "order_type": "MARKET"
+            }
+            order_res = requests.post("https://api.kite.trade/orders/regular", headers=headers, data=payload)
+            if order_res.status_code == 200:
+                TRADING_CONFIG["trade_logs"].append({"timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "message": f"[KITE LIVE ORDER] Placed MARKET {transaction_type} for {quantity}x {clean_ticker}", "ticker": clean_ticker, "type": "KITE"})
+            else:
+                TRADING_CONFIG["trade_logs"].append({"timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "message": f"[KITE ERROR] Order response: {order_res.text}", "ticker": clean_ticker, "type": "ERROR"})
+        except Exception as e:
+            TRADING_CONFIG["trade_logs"].append({"timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "message": f"[KITE ERROR] {str(e)}", "ticker": clean_ticker, "type": "ERROR"})
 
 def execute_algo_buy(ticker, pattern, entry, target, sl, current_price):
     existing = [p for p in TRADING_CONFIG["active_positions"] if p["ticker"] == ticker]
@@ -225,29 +243,8 @@ def execute_algo_buy(ticker, pattern, entry, target, sl, current_price):
     invested_amount = quantity * entry
     TRADING_CONFIG["paper_funds"] -= invested_amount
 
-    if TRADING_CONFIG["kite_connected"] and TRADING_CONFIG["kite_access_token"] and TRADING_CONFIG["kite_api_key"]:
-        try:
-            clean_ticker = ticker.replace(".NS", "")
-            headers = {
-                "X-Kite-Version": "3",
-                "Authorization": f"token {TRADING_CONFIG['kite_api_key']}:{TRADING_CONFIG['kite_access_token']}"
-            }
-            payload = {
-                "variety": "regular",
-                "exchange": "NSE",
-                "tradingsymbol": clean_ticker,
-                "transaction_type": "BUY",
-                "quantity": quantity,
-                "product": "CNC",
-                "order_type": "MARKET"
-            }
-            order_res = requests.post("https://api.kite.trade/orders/regular", headers=headers, data=payload)
-            if order_res.status_code == 200:
-                TRADING_CONFIG["trade_logs"].append({"timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "message": f"[KITE LIVE ORDER] Placed MARKET BUY for {quantity}x {clean_ticker}", "ticker": ticker, "type": "KITE"})
-            else:
-                TRADING_CONFIG["trade_logs"].append({"timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "message": f"[KITE ERROR] Order response: {order_res.text}", "ticker": ticker, "type": "ERROR"})
-        except Exception as e:
-            TRADING_CONFIG["trade_logs"].append({"timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "message": f"[KITE ERROR] Failed to place order: {str(e)}", "ticker": ticker, "type": "ERROR"})
+    clean_ticker = ticker.replace(".NS", "")
+    place_kite_order(clean_ticker, "BUY", quantity)
 
     new_position = {
         "ticker": ticker,
@@ -264,69 +261,102 @@ def execute_algo_buy(ticker, pattern, entry, target, sl, current_price):
     msg = f"[ALGO EXECUTION] BUY {quantity} shares of {ticker} @ Entry Rs. {entry} | Target: Rs. {target} | SL: Rs. {sl}"
     TRADING_CONFIG["trade_logs"].append({"timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "message": msg, "ticker": ticker, "type": "EXECUTION"})
 
-def monitor_and_manage_positions():
+def automated_market_scanner_and_manager():
     while True:
         try:
-            if TRADING_CONFIG["algo_trading_enabled"] and TRADING_CONFIG["active_positions"]:
-                for pos in list(TRADING_CONFIG["active_positions"]):
-                    t = yf.Ticker(pos["ticker"], session=session)
-                    todays_data = t.history(period="1d")
-                    if todays_data is not None and not todays_data.empty:
-                        ltp = float(todays_data['Close'].iloc[-1])
-                        pos["current_price"] = ltp
+            if TRADING_CONFIG["algo_trading_enabled"]:
+                # 1. Manage and exit active positions when Target or SL is hit
+                if TRADING_CONFIG["active_positions"]:
+                    for pos in list(TRADING_CONFIG["active_positions"]):
+                        t = yf.Ticker(pos["ticker"], session=session)
+                        todays_data = t.history(period="1d")
+                        if todays_data is not None and not todays_data.empty:
+                            ltp = float(todays_data['Close'].iloc[-1])
+                            pos["current_price"] = ltp
+                            clean_ticker = pos["ticker"].replace(".NS", "")
 
-                        if ltp >= pos["target"]:
-                            exit_val = pos["quantity"] * pos["target"]
-                            pnl = exit_val - pos["invested"]
-                            pnl_pct = round((pnl / pos["invested"]) * 100, 2)
-                            TRADING_CONFIG["paper_funds"] += exit_val
+                            if ltp >= pos["target"]:
+                                place_kite_order(clean_ticker, "SELL", pos["quantity"])
+                                exit_val = pos["quantity"] * pos["target"]
+                                pnl = exit_val - pos["invested"]
+                                pnl_pct = round((pnl / pos["invested"]) * 100, 2)
+                                TRADING_CONFIG["paper_funds"] += exit_val
 
-                            journal_entry = {
-                                "ticker": pos["ticker"],
-                                "pattern": pos["pattern"],
-                                "entry_price": pos["entry_price"],
-                                "exit_price": pos["target"],
-                                "quantity": pos["quantity"],
-                                "invested": pos["invested"],
-                                "exit_value": round(exit_val, 2),
-                                "pnl": round(pnl, 2),
-                                "pnl_pct": pnl_pct,
-                                "exit_reason": "TARGET HIT 🎯",
-                                "entry_time": pos["entry_time"],
-                                "exit_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                            }
-                            TRADING_CONFIG["trade_journal"].insert(0, journal_entry)
-                            TRADING_CONFIG["active_positions"].remove(pos)
-                            TRADING_CONFIG["trade_logs"].append({"timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "message": f"[ALGO EXIT] TARGET HIT for {pos['ticker']} @ Rs. {pos['target']} | PnL: Rs. {round(pnl, 2)}", "ticker": pos["ticker"], "type": "EXIT"})
+                                journal_entry = {
+                                    "ticker": pos["ticker"],
+                                    "pattern": pos["pattern"],
+                                    "entry_price": pos["entry_price"],
+                                    "exit_price": pos["target"],
+                                    "quantity": pos["quantity"],
+                                    "invested": pos["invested"],
+                                    "exit_value": round(exit_val, 2),
+                                    "pnl": round(pnl, 2),
+                                    "pnl_pct": pnl_pct,
+                                    "exit_reason": "TARGET HIT 🎯",
+                                    "entry_time": pos["entry_time"],
+                                    "exit_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                }
+                                TRADING_CONFIG["trade_journal"].insert(0, journal_entry)
+                                TRADING_CONFIG["active_positions"].remove(pos)
+                                TRADING_CONFIG["trade_logs"].append({"timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "message": f"[ALGO EXIT] TARGET HIT for {pos['ticker']} @ Rs. {pos['target']} | PnL: Rs. {round(pnl, 2)}", "ticker": pos["ticker"], "type": "EXIT"})
 
-                        elif ltp <= pos["sl"]:
-                            exit_val = pos["quantity"] * pos["sl"]
-                            pnl = exit_val - pos["invested"]
-                            pnl_pct = round((pnl / pos["invested"]) * 100, 2)
-                            TRADING_CONFIG["paper_funds"] += exit_val
+                            elif ltp <= pos["sl"]:
+                                place_kite_order(clean_ticker, "SELL", pos["quantity"])
+                                exit_val = pos["quantity"] * pos["sl"]
+                                pnl = exit_val - pos["invested"]
+                                pnl_pct = round((pnl / pos["invested"]) * 100, 2)
+                                TRADING_CONFIG["paper_funds"] += exit_val
 
-                            journal_entry = {
-                                "ticker": pos["ticker"],
-                                "pattern": pos["pattern"],
-                                "entry_price": pos["entry_price"],
-                                "exit_price": pos["sl"],
-                                "quantity": pos["quantity"],
-                                "invested": pos["invested"],
-                                "exit_value": round(exit_val, 2),
-                                "pnl": round(pnl, 2),
-                                "pnl_pct": pnl_pct,
-                                "exit_reason": "STOP LOSS HIT 🛑",
-                                "entry_time": pos["entry_time"],
-                                "exit_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                            }
-                            TRADING_CONFIG["trade_journal"].insert(0, journal_entry)
-                            TRADING_CONFIG["active_positions"].remove(pos)
-                            TRADING_CONFIG["trade_logs"].append({"timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "message": f"[ALGO EXIT] STOP LOSS HIT for {pos['ticker']} @ Rs. {pos['sl']} | PnL: Rs. {round(pnl, 2)}", "ticker": pos["ticker"], "type": "EXIT"})
+                                journal_entry = {
+                                    "ticker": pos["ticker"],
+                                    "pattern": pos["pattern"],
+                                    "entry_price": pos["entry_price"],
+                                    "exit_price": pos["sl"],
+                                    "quantity": pos["quantity"],
+                                    "invested": pos["invested"],
+                                    "exit_value": round(exit_val, 2),
+                                    "pnl": round(pnl, 2),
+                                    "pnl_pct": pnl_pct,
+                                    "exit_reason": "STOP LOSS HIT 🛑",
+                                    "entry_time": pos["entry_time"],
+                                    "exit_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                }
+                                TRADING_CONFIG["trade_journal"].insert(0, journal_entry)
+                                TRADING_CONFIG["active_positions"].remove(pos)
+                                TRADING_CONFIG["trade_logs"].append({"timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "message": f"[ALGO EXIT] STOP LOSS HIT for {pos['ticker']} @ Rs. {pos['sl']} | PnL: Rs. {round(pnl, 2)}", "ticker": pos["ticker"], "type": "EXIT"})
+
+                # 2. Automatically scan watchlist for new breakout entries to trigger orders
+                for ticker in WATCHLIST[:15]: # Scans top 15 high-liquidity stocks in background loop
+                    try:
+                        t = yf.Ticker(ticker, session=session)
+                        if not check_fundamentals(ticker, stock_obj=t):
+                            continue
+                        df = t.history(period="3mo", interval="1d", auto_adjust=True)
+                        if df is None or df.empty or len(df) < 30:
+                            continue
+                        vol_sma = df['Volume'].rolling(window=20).mean().iloc[-1]
+                        current_vol = df['Volume'].iloc[-1]
+                        if current_vol <= (vol_sma * 1.49):
+                            continue
+                        if not evaluate_custom_strategy(df, TRADING_CONFIG["selected_strategy"]):
+                            continue
+
+                        pattern, entry, target, sl, _, _ = identify_chart_pattern(df, is_intraday=False)
+                        risk = entry - sl
+                        reward = target - entry
+                        if risk <= 0 or (reward / risk) < 2.0:
+                            continue
+
+                        price = float(df['Close'].iloc[-1])
+                        if price >= entry:
+                            execute_algo_buy(ticker, pattern, entry, target, sl, price)
+                    except Exception:
+                        pass
         except Exception as e:
-            print(f"Background monitor error: {e}")
-        time.sleep(30)
+            print(f"Background automation loop error: {e}")
+        time.sleep(45)
 
-threading.Thread(target=monitor_and_manage_positions, daemon=True).start()
+threading.Thread(target=automated_market_scanner_and_manager, daemon=True).start()
 
 def fetch_and_scan_stock(ticker):
     try:
@@ -358,9 +388,6 @@ def fetch_and_scan_stock(ticker):
         price = float(last_row['Close'])
         prev_close = float(prev_row['Close'])
         chg = round(((price - prev_close) / prev_close) * 100, 2)
-
-        if price >= entry and TRADING_CONFIG["algo_trading_enabled"]:
-            execute_algo_buy(ticker, pattern, entry, target, sl, price)
 
         ohlc = []
         for idx, row in df.iloc[-50:].iterrows():
