@@ -14,9 +14,15 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 import threading
 import time
-from kiteconnect import KiteConnect
 
-app = FastAPI(title="BreakoutDesk Pattern Screener & Algo Terminal (Kite Integrated)")
+# Try importing KiteConnect gracefully
+try:
+    from kiteconnect import KiteConnect
+    KITE_AVAILABLE = True
+except ImportError:
+    KITE_AVAILABLE = False
+
+app = FastAPI(title="BreakoutDesk Pattern Screener & Algo Terminal")
 
 app.add_middleware(
     CORSMiddleware,
@@ -222,8 +228,7 @@ def execute_algo_buy(ticker, pattern, entry, target, sl, current_price):
     invested_amount = quantity * entry
     TRADING_CONFIG["paper_funds"] -= invested_amount
 
-    # If Kite Live Algo is connected, place real order via Kite API
-    if TRADING_CONFIG["kite_connected"] and TRADING_CONFIG["kite_access_token"] and TRADING_CONFIG["kite_api_key"]:
+    if KITE_AVAILABLE and TRADING_CONFIG["kite_connected"] and TRADING_CONFIG["kite_access_token"] and TRADING_CONFIG["kite_api_key"]:
         try:
             kite = KiteConnect(api_key=TRADING_CONFIG["kite_api_key"])
             kite.set_access_token(TRADING_CONFIG["kite_access_token"])
@@ -466,28 +471,31 @@ def connect_kite(payload: dict):
     api_secret = payload.get("api_secret")
     request_token = payload.get("request_token")
 
-    if not api_key or not api_secret:
-        raise HTTPException(status_code=400, detail="API Key and Secret are required.")
+    if not api_key or not api_secret or not request_token:
+        raise HTTPException(status_code=400, detail="API Key, Secret, and Request Token are required.")
 
-    TRADING_CONFIG["kite_api_key"] = api_key
-    TRADING_CONFIG["kite_api_secret"] = api_secret
+    if not KITE_AVAILABLE:
+        raise HTTPException(status_code=500, detail="kiteconnect library is not installed in Python environment.")
 
     try:
-        if request_token:
-            kite = KiteConnect(api_key=api_key)
-            data = kite.generate_session(request_token, api_secret=api_secret)
-            access_token = data["access_token"]
-            TRADING_CONFIG["kite_access_token"] = access_token
-            TRADING_CONFIG["kite_connected"] = True
-            TRADING_CONFIG["trade_logs"].append({"timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "message": "[KITE CONNECT] Successfully connected and generated live access token!", "ticker": "SYSTEM", "type": "KITE"})
-            return {"status": "success", "message": "Connected to Zerodha Kite successfully!"}
-        else:
-            # Return login URL for user authentication
-            kite = KiteConnect(api_key=api_key)
-            login_url = kite.login_url()
-            return {"status": "redirect", "login_url": login_url}
+        kite = KiteConnect(api_key=api_key)
+        data = kite.generate_session(request_token, api_secret=api_secret)
+        access_token = data["access_token"]
+        
+        TRADING_CONFIG["kite_api_key"] = api_key
+        TRADING_CONFIG["kite_api_secret"] = api_secret
+        TRADING_CONFIG["kite_access_token"] = access_token
+        TRADING_CONFIG["kite_connected"] = True
+        
+        TRADING_CONFIG["trade_logs"].append({
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "message": "[KITE CONNECT] Successfully connected and generated live access token!",
+            "ticker": "SYSTEM",
+            "type": "KITE"
+        })
+        return {"status": "success", "message": "Connected to Zerodha Kite successfully!"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=400, detail=f"Kite session error: {str(e)}")
 
 @app.get("/api/algo/dashboard")
 def get_algo_dashboard():
